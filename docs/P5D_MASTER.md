@@ -1730,6 +1730,8 @@
 | M1655 | §18.5172: **The COLLECTION character viewer keeps its PC keycaps after visiting the costume option: the flow-aware detection window (1.2 s -> 6 s), costume-list jobs counted as flow evidence, the costume-list back no longer stepping out, and a viewer-job self-heal restoring depth 3 - no PC key-binding or hint-glyph cell change.** Verified from the recorded session: old build logged viewer on -> off after the costume list; the fix keeps the viewer on (self-heal line instead). RECOMP_INPUT_LOG=1 records raw input events for replay. Version v0.1.3; release 300,453,354 B, SHA256 F0E95347...9D608CA0, payload v0.1.3-p5d-3e37179+a86a7bfe46bb; audits green. |
 | M1656 | §18.5173: **Xbox controller support: auto device switching (keyboard/mouse default, pad input switches the UI and input to Xbox, keyboard/mouse switches back), LB/RB as the game's L/R by default (shoulder_buttons=bumpers), A = confirm / B = back everywhere except the dance chart (keyed to the song gauge), P5R BUTTON_XBOX.PAK glyphs for the menus/LB/RB/start/view/sticks, the game's PS d-pad art kept, and author-drawn coloured Y/B/A dance letters.** Version v0.1.4, release 300,504,229 B, SHA256 FC24C14C...A55561D, payload v0.1.4-p5d-8149f45+de082c99a301; audits green. |
 | M1657 | §18.5174: **The launcher imports DLC (add-on content): a "③ 追加內容（DLC，可選）" step copies a NoNpDrm reAddcont tree into <RECOMP_FS>/addcont0 with a progress bar (and a --import-dlc hook without the window), plus 移除全部 DLC; P5D then licenses and opens every addcont pack.** Verified: 59 add-ons / 2409 MB imported, the game logs "add-on licence ... -> licensed" and opens addcont0:/ADDCONT.../DLCD....cpk (previously add-cont data absent); the base game still runs without DLC. Release v0.1.4, 300,504,229 B, SHA256 FC24C14C...A55561D, payload v0.1.4-p5d-8149f45+de082c99a301; audits green. |
+| M1658 | §18.5175: **The COMMU event-field room (event_fieldP5) gets a keyboard/mouse scheme: WASD moves (left stick), the mouse looks (right stick), Esc pauses/resumes, the pointer is captured in the room and its START-badge hint shows an Esc keycap.** The room is recognised by the app manager's current process name (the job-list scan missed it); the Esc keycap is a field_only hint cell drawn in the 256x128 hint atlas. Verified with the author. Release v0.1.5, 300,511,114 B, SHA256 68C2F7D2...90830BA1, payload v0.1.5-p5d-867a628+34517e350d2c; audits green. |
+| M1659 | §18.5176: **A scratch (劇盤) in the dance stage rumbles the pad once: a stick push is detected (any direction, from near rest past 55%, or a fast deflection increase), one burst per push, pad only -- keyboard/mouse never rumble; R3 is a rumble self-test.** [RUMBLE] log lines. Verified by the author. Release v0.1.5, 300,511,114 B, SHA256 68C2F7D2...90830BA1, payload v0.1.5-p5d-867a628+34517e350d2c; audits green. |
 proposal).** mnsHandle_8111b64c/8111b190 receive a real-time float (+0.01668/frame at 60 vs +0.03337 at 30);
 mnsProcess_811251d6 fires per-frame but constant; other mnsProcess/mnsOption/gfd entries do not fire per-frame;
 object-word slopes show only the known danceQuantizer_81049976 w2 (+0.5 at 60 vs +1.0 at 30). The remaining
@@ -523574,3 +523576,52 @@ imported, the game licensed them and opened the cpk, previously "add-cont data a
 copy. Release v0.1.4, payload v0.1.4-p5d-8149f45+de082c99a301.
 LOOKUP: 18.5174 = M1657 (DLC import) -> 18.5173 [relevant: M1656 the Xbox pad UI in the same release], 18.5168 [relevant: M1651
 launcher-side repairs].
+
+### 18.5175 M1658 THE COMMU EVENT-FIELD ROOM (event_fieldP5) GETS A KEYBOARD/MOUSE SCHEME: WASD MOVES, THE MOUSE LOOKS, ESC PAUSES, THE POINTER IS CAPTURED THERE AND ITS START-BADGE HINT BECOMES AN ESC KEYCAP
+
+Requested: the COMMU event-field room ("the room you walk around and investigate") had no keyboard/mouse scheme; the pad
+worked there, the keyboard and mouse did not.
+
+Code-level identification: the room is the game's **event_fieldP5** process (eboot strings event/bin_field/, EVENT_FIELD_*,
+t_field*.c); it reads the analog sticks directly (left = move, right = look), which the port had no keyboard/mouse source
+for. The first detector only looked at the live job list, which does not reliably carry that process -- so the room was never
+recognised and the fix never engaged (found through the [JOBNAME] log plus a generic-Esc log line). It now reads the app
+manager's current process name (p5d_job_name_fresh) as the primary signal.
+
+M1658: in window_input(), while the room is active and the keyboard/mouse is the UI device: WASD drives the left stick and
+the accumulated mouse motion (with mouse_sens) decays into the right stick (a short deflection, re-centred every read), so
+moving the mouse turns the camera. Esc opens the pause (tap START + mark the pause, the same state the pad's Menu uses) and
+closes it on a second press. The pointer is captured (relative mouse mode) while in the room so it cannot leave the window
+and stop the look; the pause/settings pages and the overlay release it. The room's START-badge hint cell in the 256x128
+hint atlas (the same cell whose keycap is Alt in CONFIG and Enter in the viewer) is patched with a hand-drawn **Esc** keycap
+that only appears in this room. Verified with the author: WASD moves, the mouse turns, Esc pauses and resumes, the hint reads
+Esc, and the pointer stays in the window.
+
+ANTI-FORGETTING ENTRY. Keywords: M1658 event field room, event_fieldP5, COMMU investigation room controls, room WASD mouse
+look Esc, Esc keycap hint. The room is the game's event_fieldP5 process; it reads the sticks directly. window.c's
+window_input drives left stick from WASD and right stick from accumulated mouse motion while window_in_event_field() (current
+process name, not the job list) and the keyboard/mouse UI is active; Esc taps START and marks the pause; the pointer is
+captured in the room (released for pause/settings/overlay); the START badge hint shows an Esc keycap (field_only cell).
+Release v0.1.5, payload v0.1.5-p5d-867a628+34517e350d2c; audits green.
+LOOKUP: 18.5175 = M1658 (event-field controls) -> 18.5173 [relevant: M1656 pad UI], 18.5176 [relevant: M1659 scratch rumble].
+
+### 18.5176 M1659 A SCRATCH ("刮盤") IN THE DANCE STAGE RUMBLES THE PAD ONCE: A STICK PUSH IS DETECTED, THE KEYBOARD AND MOUSE NEVER RUMBLE, R3 IS A SELF-TEST
+
+Requested: when the player performs the dance stage's scratch (the disc-scratch move) the controller should rumble once.
+Twice revised with the author: the scratch is a stick push in any direction (the game's default control), not a touch swipe;
+and only the pad may trigger it -- keyboard/mouse must be silent.
+
+M1659: window.c samples the left and right sticks once a frame while the dance stage is on screen; a push from near rest
+(under ~42%) past ~55% of the travel, or a fast increase of the deflection while the stick is already deflected (a second
+scratch without returning to the centre), fires one SDL_RumbleGamepad burst (0x4000/0xC000, 180 ms) with a 220 ms cooldown so
+one push is one burst and a held stick does not repeat. Keyboard/mouse paths have no rumble calls at all. R3 is a rumble
+self-test (the stick click already recentres the gyro). [RUMBLE] lines log each burst and a controller that reports no rumble.
+Earlier versions fired on any stick input (too eager) and then on stick circles/reversals (missed the game's actual push
+scratch); the author confirmed the push rule works.
+
+ANTI-FORGETTING ENTRY. Keywords: M1659 scratch rumble, dance stage rumble, stick push scratch, SDL_RumbleGamepad, R3 rumble
+self-test. The dance stage's scratch is a stick push in any direction; window.c samples both sticks once a frame and fires one
+rumble burst (0x4000/0xC000, 180 ms, 220 ms cooldown) on a push from rest past 55% or a fast deflection increase while
+deflected; only the pad triggers it (no keyboard/mouse rumble); R3 is a self-test; [RUMBLE] log lines. Release v0.1.5, payload
+v0.1.5-p5d-867a628+34517e350d2c.
+LOOKUP: 18.5176 = M1659 (scratch rumble) -> 18.5175 [relevant: M1658 event-field controls], 18.5173 [relevant: M1656 pad UI].
