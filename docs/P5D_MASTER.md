@@ -1732,6 +1732,9 @@
 | M1657 | §18.5174: **The launcher imports DLC (add-on content): a "③ 追加內容（DLC，可選）" step copies a NoNpDrm reAddcont tree into <RECOMP_FS>/addcont0 with a progress bar (and a --import-dlc hook without the window), plus 移除全部 DLC; P5D then licenses and opens every addcont pack.** Verified: 59 add-ons / 2409 MB imported, the game logs "add-on licence ... -> licensed" and opens addcont0:/ADDCONT.../DLCD....cpk (previously add-cont data absent); the base game still runs without DLC. Release v0.1.4, 300,504,229 B, SHA256 FC24C14C...A55561D, payload v0.1.4-p5d-8149f45+de082c99a301; audits green. |
 | M1658 | §18.5175: **The COMMU event-field room (event_fieldP5) gets a keyboard/mouse scheme: WASD moves (left stick), the mouse looks (right stick), Esc pauses/resumes, the pointer is captured in the room and its START-badge hint shows an Esc keycap.** The room is recognised by the app manager's current process name (the job-list scan missed it); the Esc keycap is a field_only hint cell drawn in the 256x128 hint atlas. Verified with the author. Release v0.1.5, 300,511,114 B, SHA256 68C2F7D2...90830BA1, payload v0.1.5-p5d-867a628+34517e350d2c; audits green. |
 | M1659 | §18.5176: **A scratch (劇盤) in the dance stage rumbles the pad once: a stick push is detected (any direction, from near rest past 55%, or a fast deflection increase), one burst per push, pad only -- keyboard/mouse never rumble; R3 is a rumble self-test.** [RUMBLE] log lines. Verified by the author. Release v0.1.5, 300,511,114 B, SHA256 68C2F7D2...90830BA1, payload v0.1.5-p5d-867a628+34517e350d2c; audits green. |
+| M1660 | §18.5177: **A PS3/PS4/PS5 pad keeps the game's own PS glyphs and natural faces (Circle confirm, Cross back); the keyboard painting is skipped for it.** Detected with SDL_GetGamepadType; xbox_ui_active() excludes it; the missing early return after the Xbox branch (keyboard keycaps were painted, UI looked unchanged) is fixed. Verified by the author (DS4-mode pad). Release v0.1.6, 300,542,799 B, SHA256 D7D6AC73...0DAD9042, payload v0.1.6-p5d-1e35587+78276dee3de3. |
+| M1661 | §18.5178: **A Nintendo Switch pad gets the NS face badges (ABXY) and Plus/Minus, the game's PS art for the other hints, and the port's own monochrome X/A/B letters in the dance stage (scheme 2: white with a thin black edge, cropped to fill).** Buttons: A/B/X/Y from BUTTON_NX.PAK; natural A confirm / B back. Verified by the author in Switch mode. Release v0.1.6, 300,542,799 B, SHA256 D7D6AC73...0DAD9042, payload v0.1.6-p5d-1e35587+78276dee3de3. |
+| M1662 | §18.5179: **The DLC-costume crash in the character viewer: SDL_UploadToGPUTexture was called from upload_texture with a null command buffer or a stale texture allocation.** Guards for entry/texture/device/command buffer/copy pass/transfer mapping, bad size/mip rejection, and a GPU-texture recreate when the mip count changed (the 小队长 crash). Verified: crown and 小队长 switch without a crash. Release v0.1.6, 300,542,799 B, SHA256 D7D6AC73...0DAD9042, payload v0.1.6-p5d-1e35587+78276dee3de3. |
 proposal).** mnsHandle_8111b64c/8111b190 receive a real-time float (+0.01668/frame at 60 vs +0.03337 at 30);
 mnsProcess_811251d6 fires per-frame but constant; other mnsProcess/mnsOption/gfd entries do not fire per-frame;
 object-word slopes show only the known danceQuantizer_81049976 w2 (+0.5 at 60 vs +1.0 at 30). The remaining
@@ -523625,3 +523628,68 @@ rumble burst (0x4000/0xC000, 180 ms, 220 ms cooldown) on a push from rest past 5
 deflected; only the pad triggers it (no keyboard/mouse rumble); R3 is a self-test; [RUMBLE] log lines. Release v0.1.5, payload
 v0.1.5-p5d-867a628+34517e350d2c.
 LOOKUP: 18.5176 = M1659 (scratch rumble) -> 18.5175 [relevant: M1658 event-field controls], 18.5173 [relevant: M1656 pad UI].
+
+### 18.5177 M1660 A PS3/PS4/PS5 PAD KEEPS THE GAME'S OWN PS GLYPHS AND ITS NATURAL FACES (CIRCLE CONFIRM, CROSS BACK); THE KEYBOARD PAINTING IS SKIPPED FOR IT
+
+Requested: with a PS4/PS5 pad (a 小鸡九尾狐 in DS4 mode) the UI and keys should switch back to the game's original PS UI on pad
+input, and back to the keyboard/mouse UI on keyboard/mouse input, like the Xbox pad adaptation.
+
+M1660: window.c reads SDL_GetGamepadType when the gamepad is opened and remembers the family (PS3/PS4/PS5 vs Xbox vs
+Switch); window_pad_is_ps() is exported to the renderer. gfx_gpu.c's xbox_ui_active() excludes PS pads, so both glyph patches
+return early and the atlases keep the game's own PS art; p5d_ab_swapped() returns 0 for a PS pad, so the faces stay natural
+(Circle in the game is confirm, Cross back). Found during testing: the first version showed the Xbox layout (xbox_ui_active
+did not exclude PS), then, once excluded, the UI looked unchanged because the keyboard painting below the Xbox branch was not
+skipped for a non-Xbox pad -- the early return after the Xbox branch was missing in both keyglyph_patch and hintglyph_patch;
+with it the pad keeps the original PS glyphs. Verified by the author (DS4-mode pad, keyboard/mouse switch back and forth).
+
+ANTI-FORGETTING ENTRY. Keywords: M1660 PS4 PS5 pad UI, DualShock DualSense glyphs, pad family detection, Circle confirm Cross
+back. window.c sets p5d_pad_ps from SDL_GetGamepadType (PS3/PS4/PS5) at gamepad open; window_pad_is_ps() is used by gfx_gpu.c
+(xbox_ui_active excludes it) and by p5d_ab_swapped (no swap for PS). Both glyph patches must return early for a pad that is
+not Xbox (if !window_uses_keyboard()) so the game's PS art survives; otherwise the keyboard keycaps are painted and the UI
+looks unchanged. Release v0.1.6, payload v0.1.6-p5d-1e35587+78276dee3de3; audits green.
+LOOKUP: 18.5177 = M1660 (PS pad UI) -> 18.5178 [relevant: M1661 Switch pad], 18.5179 [relevant: M1662 crash].
+
+### 18.5178 M1661 A NINTENDO SWITCH PAD GETS THE NS FACE BADGES AND PLUS/MINUS, THE GAME'S PS ART ELSEWHERE, AND OUR OWN MONOCHROME X/A/B IN THE DANCE STAGE
+
+Requested: Switch (NS) pad support; the author picked the NS `_b` badges for the button hints (ABXY + Plus/Minus), the
+game's own PS art for the other hints, and in the dance stage the port's own X/A/B letters, monochrome and in the original
+icons' style (scheme 2: white letters with a thin black edge, after six drawn options were compared).
+
+M1661: `runtime/gfx/nsglyphs.h` is generated from P5R PC's BUTTON/BUTTON_NX.PAK `_b` set (a/b/x/y, plus, minus) at 64x64
+premultiplied RGBA; NS_DX/DA/DB are the author's scheme-2 letters, cropped to their ink box so they fill the dance cells like
+the game's white symbols. window.c detects SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO/JOYCON_* into p5d_pad_ns and exports
+window_pad_is_ns(); gfx_gpu.c has ns_ui_active() and ns_paint(); hintglyph_patch repaints only the mapped cells (Circle->A,
+Cross->B, Square->Y, Triangle->X, START->+, SELECT->-, clear=2) and leaves the d-pad/L/R/stick cells as the game's PS art;
+keyglyph_patch paints the dance boxes triangle->X, circle->A, cross->B with the scheme-2 letters. p5d_ab_swapped() returns 0
+(a Switch pad is natural: A right = confirm, B bottom = back). Found: the NS pad first fell into the Xbox branch (xbox_ui_active
+did not exclude it), which showed the Xbox layout; excluded now. Verified by the author with a 小鸡九尾狐 in Switch mode.
+
+ANTI-FORGETTING ENTRY. Keywords: M1661 Nintendo Switch pad UI, NS badges, BUTTON_NX.PAK, X/A/B dance letters monochrome.
+nsglyphs.h is generated from BUTTON_NX.PAK (NG_A/B/X/Y/PLUS/MINUS + NG_DX/DA/DB cropped scheme-2 letters); window.c sets
+p5d_pad_ns for SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_* and exports window_pad_is_ns(); gfx_gpu.c ns_ui_active() must be checked
+before the keyboard painting (and xbox_ui_active() must exclude NS, else the Xbox layout appears); hint cells map ABXY/plus/
+minus, other hints stay PS; dance faces triangle->X circle->A cross->B. Release v0.1.6, payload
+v0.1.6-p5d-1e35587+78276dee3de3; audits green.
+LOOKUP: 18.5178 = M1661 (Switch pad UI) -> 18.5177 [relevant: M1660 PS pad], 18.5179 [relevant: M1662 crash].
+
+### 18.5179 M1662 THE DLC-COSTUME CRASH IN THE CHARACTER VIEWER: SDL_UPLOADTOGPUTEXTURE WAS HANDED A TEXTURE CACHE / COMMAND BUFFER THAT WAS NO LONGER VALID
+
+Reported: in the character viewer, putting 代行者之冠 on 奥村春 crashed the game; after the first fix the next costume
+(小队长) still crashed.
+
+M1662: the crash was an access violation at host +0x4c inside SDL_UploadToGPUTexture, called from upload_texture (found with
+the crash handler's host backtrace plus the binary's symbol table: upload_texture -> bind_unit -> gfx_gpu_draw on a guest draw
+after the costume change). Fixes in gfx_gpu.c's upload_texture: reject a missing entry/texture/device and bad sizes or mip
+counts; check SDL_AcquireGPUCommandBuffer and SDL_BeginGPUCopyPass in both upload paths (SDL dereferences a null pass without a
+check) and skip the upload with a log line instead; check SDL_MapGPUTransferBuffer for null before memcpy; and recreate the
+cached GPU texture when its mip count changed between uploads -- a stale allocation with fewer levels makes SDL index past its
+level array, which was the second crash (the 小队长 costume). Env-gated RECOMP_UPLOAD_LOG=1 prints every upload's texture/level/
+layer for finding such a texture when a future report comes. Verified by the author: the crown and the 小队长 costume now
+switch without a crash.
+
+ANTI-FORGETTING ENTRY. Keywords: M1662 DLC costume crash, character viewer crash, SDL_UploadToGPUTexture null, upload_texture
+guards, mip count recreate. upload_texture (gfx_gpu.c) must not reach SDL with a null entry/texture/device/command buffer/copy
+pass/transfer mapping, must reject bad sizes/levels, and must recreate e->tex when e->levels != levels (the stale mip array
+was the 小队长 crash); RECOMP_UPLOAD_LOG=1 logs each upload. Release v0.1.6, payload v0.1.6-p5d-1e35587+78276dee3de3; audits
+green.
+LOOKUP: 18.5179 = M1662 (DLC-costume crash) -> 18.5177 [relevant: M1660 PS pad], 18.5178 [relevant: M1661 Switch pad].
