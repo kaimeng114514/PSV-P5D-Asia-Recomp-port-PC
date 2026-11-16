@@ -523792,3 +523792,10 @@ hooks.c's recomp_ihook_p5d_autoplay must only clear Z when window.c's p5d_chart_
 the shared branch is damaged and the present crashes. Release v0.1.7, payload v0.1.7-p5d-d42ae0b+f47a31e08547.
 LOOKUP: 18.5182 = M1665 (F5 crash) -> 18.5181 [relevant: M1664 MOD system], 18.5176 [relevant: M1659 scratch rumble uses the
 same chart signal].
+
+**M1666 — the DanceReady/DanceSelect screens are not the chart.** The author reported F5 crashing again, and that it still crashed
+with every MOD disabled: so it was the cheat itself, not the MOD system. The crash log's [KEYDBG] line showed dnow=1 at the
+DanceReady_P5 job -- those screens draw gauge-like pixels, so p5d_chart_active() (the song-gauge signal, M1665) was true and the
+hook cleared Z in a context where that shared branch carries an invalid pointer into the present. p5d_chart_active() now also
+requires that no DanceReady/DanceSelect/DanceRead* job was seen within 0.8 s, so the hook stays inert there while normal play
+still feels the cheat. Version stays v0.1.7; payload v0.1.7-p5d-a02ee36+9c4af4ce7187, 300,558,677 B, SHA256 AE0C5526...AF3D93.
