@@ -1736,6 +1736,8 @@
 | M1661 | §18.5178: **A Nintendo Switch pad gets the NS face badges (ABXY) and Plus/Minus, the game's PS art for the other hints, and the port's own monochrome X/A/B letters in the dance stage (scheme 2: white with a thin black edge, cropped to fill).** Buttons: A/B/X/Y from BUTTON_NX.PAK; natural A confirm / B back. Verified by the author in Switch mode. Release v0.1.6, 300,542,799 B, SHA256 D7D6AC73...0DAD9042, payload v0.1.6-p5d-1e35587+78276dee3de3. |
 | M1662 | §18.5179: **The DLC-costume crash in the character viewer: SDL_UploadToGPUTexture was called from upload_texture with a null command buffer or a stale texture allocation.** Guards for entry/texture/device/command buffer/copy pass/transfer mapping, bad size/mip rejection, and a GPU-texture recreate when the mip count changed (the 小队长 crash). Verified: crown and 小队长 switch without a crash. Release v0.1.6, 300,542,799 B, SHA256 D7D6AC73...0DAD9042, payload v0.1.6-p5d-1e35587+78276dee3de3. |
 | M1663 | §18.5180: **Built-in dynamic vibrance: the launcher's graphics page gets an on/off + strength option (0-100%); the presented frame's saturation is lifted adaptively (dull colours rise, saturated ones stay), strength 0 = off.** Measured +29.5% mean saturation at 60%, no frame-rate effect. HDR was investigated and dropped (the author's internal panel has no HDR10 EDID metadata; SDL3 HDR swapchain support can be used on an external HDR display later). Release v0.1.7, 300,543,279 B, SHA256 72D7E45E...774443, payload v0.1.7-p5d-24d895c+ab6b1a096ccb. |
+| M1664 | §18.5181: **A MOD page in the launcher (import, cover/name/author/version, per-mod enable switch, persisted) and the CPK TOC patch that applies Reloaded-II folder mods to the port's data.cpk.** The mod's files are appended to the CPK and the TOC entry (size/extract/offset) rewritten (size == extract: raw); a state file restores before each re-apply. Verified TOC read-back, byte comparison and a boot to the main menu; the dance-stage visual check is the author's. Release v0.1.7, payload v0.1.7-p5d-d42ae0b+f47a31e08547. |
+| M1665 | §18.5182: **The auto-play cheat's hook only clears Z while the chart is on screen (p5d_chart_active); F5 in the dance-ready/settings screens damaged a shared branch and crashed window_present_gpu.** Release v0.1.7, payload v0.1.7-p5d-d42ae0b+f47a31e08547. |
 proposal).** mnsHandle_8111b64c/8111b190 receive a real-time float (+0.01668/frame at 60 vs +0.03337 at 30);
 mnsProcess_811251d6 fires per-frame but constant; other mnsProcess/mnsOption/gfd entries do not fire per-frame;
 object-word slopes show only the known danceQuantizer_81049976 w2 (+0.5 at 60 vs +1.0 at 30). The remaining
@@ -523747,3 +523749,46 @@ v0.1.7-p5d-2e04ccf+365d16c4bdea, 300,546,960 B, SHA256 3603C711...E9E77F.
 saturation scale at full strength is now 2x (was 4x), a light normal lift; the shader source (vibrance.frag) is in the repo
 and compiled with glslc, the CPU fallback uses the same 2x. Version stays v0.1.7; payload
 v0.1.7-p5d-3d91d5d+41d66a247e35, 300,547,386 B, SHA256 24B7E10D...6AC8.
+
+### 18.5181 M1664 A MOD SYSTEM IN THE LAUNCHER: A MOD PAGE (IMPORT / LIST / COVER / AUTHOR / ENABLE) AND THE CPK TOC PATCH THAT MAKES RELOADED-II FOLDER MODS WORK
+
+Requested: a MOD page next to the graphics page, with in-game mods: import, list name/cover/author, an enable switch per mod,
+and the mods actually applied. The author supplied a Reloaded-II folder mod (alternate_swim_wear_girls_ver2: Mod.xml plus
+Data/dance/player/p5/pc204_07.GMD and three more player models).
+
+M1664: hub.cpp gained a MOD tab (after 畫質選項): "添加 MOD 文件夾…" copies a Reloaded-II folder into
+<library>/decrypted/PCSH10109/recomp/mods/<name>/, reads Mod.xml (Title/Author/Version/Description), finds a cover image
+(cover/preview first), lists each mod with its cover thumbnail and an 啟用 switch saved to mods/mods.ini. Before play the
+launcher runs dev/p5d_mods_apply.py with the library path: the script parses the CPK TOC (a CRI @UTF table at 0x810 with the
+columns DirName/FileName/FileSize/ExtractSize/FileOffset/ID), restores any previous patch from mods/cpk_state.json, then for
+each enabled mod file finds the same-named entry (the mod's Data/ prefix dropped), appends the mod bytes at the end of the CPK
+(the mod files are smaller than the packed originals), and rewrites the entry's FileSize/ExtractSize/FileOffset in place
+(size == extract: stored raw). Verified: the four entries point at the appended bytes (TOC read-back and a byte comparison of
+the CPK at the recorded offset against the mod file), restore -> re-apply is idempotent, and the game boots to the main menu
+with the patched CPK. The mod's GMD files have the same GFS0 + embedded DDS layout as the game's own (no conversion needed).
+The cosmetic confirmation in the dance stage is the author's test.
+
+ANTI-FORGETTING ENTRY. Keywords: M1664 MOD system, Reloaded-II folder mod, Mod.xml, MOD tab, CPK TOC patch, cpk_state.json,
+mods_apply. The launcher MOD tab lives in hub.cpp (mods_scan/mods_import/mods_save, <library>/.../recomp/mods); before play it
+runs dev/p5d_mods_apply.py (P5D_LIB=<library>) which parses the CPK @UTF TOC at 0x810, restores mods/cpk_state.json, appends
+each enabled mod's node to the CPK and patches FileSize/ExtractSize/FileOffset (size == extract means raw). The launcher also
+runs it with the library path so a MOD toggle only needs a restart. Release v0.1.7, payload v0.1.7-p5d-d42ae0b+f47a31e08547.
+LOOKUP: 18.5181 = M1664 (MOD system) -> 18.5182 [relevant: M1665 F5 fix], 18.5180 [relevant: M1663 vibrance].
+
+### 18.5182 M1665 THE AUTOPLAY CHEAT'S HOOK ONLY ACTS WHILE THE CHART IS ON SCREEN (F5 IN THE DANCE-READY SCREENS CRASHED THE PRESENT)
+
+Reported: with a MOD enabled, pressing F5 (the auto-play cheat) crashed. The session log showed the toggle right after the
+DanceReady_P5 job and then an access violation in window_present_gpu (host) with a garbage guest pointer.
+
+M1665: the cheat's instruction hook (0x8111b6f8, clearing Z so the judgment branch falls through) also runs in the dance-ready
+and settings screens; there, clearing Z sent the game down a branch carrying an invalid pointer into the present (the crash was
+in window_present_gpu <- gfx_gpu_present <- gfx_present). The hook now only clears Z when window.c's p5d_chart_active() says the
+chart is on screen (the song gauge was seen recently, the same signal the scratch rumble uses); F5 in other screens still
+toggles and shows the banner, but changes nothing until a chart runs. Verified: F5 at the main menu and after the fix no longer
+crashes the present.
+
+ANTI-FORGETTING ENTRY. Keywords: M1665 autoplay cheat F5 crash, p5d_chart_active, judgment branch hook, window_present_gpu.
+hooks.c's recomp_ihook_p5d_autoplay must only clear Z when window.c's p5d_chart_active() is true (chart on screen); otherwise
+the shared branch is damaged and the present crashes. Release v0.1.7, payload v0.1.7-p5d-d42ae0b+f47a31e08547.
+LOOKUP: 18.5182 = M1665 (F5 crash) -> 18.5181 [relevant: M1664 MOD system], 18.5176 [relevant: M1659 scratch rumble uses the
+same chart signal].
