@@ -523726,3 +523726,13 @@ software frames. gfx_gpu.c now presents through the CPU path (no_gpu_present) wh
 buffer is what the window shows; the GPU fast path is bypassed only while the feature is enabled. Verified with window
 captures of the same scene: mean saturation 15.94% (off) -> 31.08% (100%), +95% on the displayed image. Version stays v0.1.7
 at the author's request; payload v0.1.7-p5d-4b39064+011ad1f73797, 300,546,972 B, SHA256 AC4842F8...FEA82.
+
+**M1663i — the GPU pass, so colour and the chosen resolution both work.** The CPU-path version (M1663g) had to force the CPU
+presentation, which shows the 1x frame at any render scale and made 2K look blurry (reported by the author). The vibrance now
+runs as a fragment shader in post.c's final present pass: the frame is FXAA'd, scaled into a window-sized copy, then the
+colour pass (adaptive saturation + the 強烈模式 contrast, strength/strong from the shared settings the launcher writes, or
+RECOMP_VIBRANCE/RECOMP_VIB_STRONG) writes the swapchain. It runs on the GPU fast path and the CPU upload path alike, and
+gfx_gpu.c no longer forces the CPU presentation, so the render scale keeps its detail. The shader (runtime/gfx/shaders/
+vibrance.frag) was compiled with the Android NDK's glslc into vk_shaders.h. Verified with 3x-render-scale window captures:
+mean saturation 14.34% off -> 42.72% at 100% (+198%), resolution unchanged. Version stays v0.1.7 (author's request); payload
+v0.1.7-p5d-75f4529+47c9e1276994, 300,548,791 B, SHA256 D46BD7CA...FBE80C.
