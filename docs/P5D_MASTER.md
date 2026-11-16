@@ -523736,3 +523736,9 @@ gfx_gpu.c no longer forces the CPU presentation, so the render scale keeps its d
 vibrance.frag) was compiled with the Android NDK's glslc into vk_shaders.h. Verified with 3x-render-scale window captures:
 mean saturation 14.34% off -> 42.72% at 100% (+198%), resolution unchanged. Version stays v0.1.7 (author's request); payload
 v0.1.7-p5d-75f4529+47c9e1276994, 300,548,791 B, SHA256 D46BD7CA...FBE80C.
+
+**M1663j — the strength curve settled.** The author used 100% + the 強烈模式 and found it too strong: the strong mode is
+removed from the launcher and both implementations, and 100% on the normal curve is now the standard upper limit of the
+slider (the slider still starts off at 0 — a value of 100% means the standard strength, not the old "strong" one). The
+tooltip says 0 = off (default), 100% = standard. Version stays v0.1.7 (author's request); payload
+v0.1.7-p5d-2e04ccf+365d16c4bdea, 300,546,960 B, SHA256 3603C711...E9E77F.
