@@ -1735,6 +1735,7 @@
 | M1660 | §18.5177: **A PS3/PS4/PS5 pad keeps the game's own PS glyphs and natural faces (Circle confirm, Cross back); the keyboard painting is skipped for it.** Detected with SDL_GetGamepadType; xbox_ui_active() excludes it; the missing early return after the Xbox branch (keyboard keycaps were painted, UI looked unchanged) is fixed. Verified by the author (DS4-mode pad). Release v0.1.6, 300,542,799 B, SHA256 D7D6AC73...0DAD9042, payload v0.1.6-p5d-1e35587+78276dee3de3. |
 | M1661 | §18.5178: **A Nintendo Switch pad gets the NS face badges (ABXY) and Plus/Minus, the game's PS art for the other hints, and the port's own monochrome X/A/B letters in the dance stage (scheme 2: white with a thin black edge, cropped to fill).** Buttons: A/B/X/Y from BUTTON_NX.PAK; natural A confirm / B back. Verified by the author in Switch mode. Release v0.1.6, 300,542,799 B, SHA256 D7D6AC73...0DAD9042, payload v0.1.6-p5d-1e35587+78276dee3de3. |
 | M1662 | §18.5179: **The DLC-costume crash in the character viewer: SDL_UploadToGPUTexture was called from upload_texture with a null command buffer or a stale texture allocation.** Guards for entry/texture/device/command buffer/copy pass/transfer mapping, bad size/mip rejection, and a GPU-texture recreate when the mip count changed (the 小队长 crash). Verified: crown and 小队长 switch without a crash. Release v0.1.6, 300,542,799 B, SHA256 D7D6AC73...0DAD9042, payload v0.1.6-p5d-1e35587+78276dee3de3. |
+| M1663 | §18.5180: **Built-in dynamic vibrance: the launcher's graphics page gets an on/off + strength option (0-100%); the presented frame's saturation is lifted adaptively (dull colours rise, saturated ones stay), strength 0 = off.** Measured +29.5% mean saturation at 60%, no frame-rate effect. HDR was investigated and dropped (the author's internal panel has no HDR10 EDID metadata; SDL3 HDR swapchain support can be used on an external HDR display later). Release v0.1.7, 300,543,279 B, SHA256 72D7E45E...774443, payload v0.1.7-p5d-24d895c+ab6b1a096ccb. |
 proposal).** mnsHandle_8111b64c/8111b190 receive a real-time float (+0.01668/frame at 60 vs +0.03337 at 30);
 mnsProcess_811251d6 fires per-frame but constant; other mnsProcess/mnsOption/gfd entries do not fire per-frame;
 object-word slopes show only the known danceQuantizer_81049976 w2 (+0.5 at 60 vs +1.0 at 30). The remaining
@@ -523693,3 +523694,27 @@ pass/transfer mapping, must reject bad sizes/levels, and must recreate e->tex wh
 was the 小队长 crash); RECOMP_UPLOAD_LOG=1 logs each upload. Release v0.1.6, payload v0.1.6-p5d-1e35587+78276dee3de3; audits
 green.
 LOOKUP: 18.5179 = M1662 (DLC-costume crash) -> 18.5177 [relevant: M1660 PS pad], 18.5178 [relevant: M1661 Switch pad].
+
+### 18.5180 M1663 A BUILT-IN DYNAMIC VIBRANCE: THE LAUNCHER'S GRAPHICS PAGE GETS AN ON/OFF + STRENGTH OPTION, APPLIED TO THE PRESENTED FRAME
+
+Requested: instead of HDR (the laptop's internal BOE panel turned out to have no HDR10 EDID metadata at all, so Windows
+cannot enable HDR there), the port got its own "dynamic vibrance" like NVIDIA's -- an on/off + strength control in the
+launcher's graphics page.
+
+M1663: window.c's apply_vibrance() runs on the presented RGBA8 frame just before upload: it lifts saturation adaptively from
+the pixel's own saturation (dull colours rise, already-saturated ones barely move), so skin tones and white highlights stay
+natural; strength 0 (the default) is a no-op. The strength comes from the launcher's shared settings ("vibrance", the same
+path sharpen/AA use) or RECOMP_VIBRANCE. Cost is a 522k-pixel integer pass (~1-2 ms), no GPU-shader change and no frame-rate
+effect. The launcher's graphics page has the "Dynamic Vibrance" slider (0-100%, default 0). Verification (same frame captured
+with 0% and 60%): mean saturation 19.05 -> 24.68 (+29.5%), the mid/high-saturation histogram buckets roughly double; zoomed
+before/after images were shown to the author. HDR itself was investigated and dropped: SDL3 has HDR swapchain compositions
+(HDR_EXTENDED_LINEAR / HDR10_ST2084) and the port could use them, but the author's internal display reports no HDR support
+(EDID DisplayID extension only, no HDR static metadata/BT.2020), so HDR could not be tested or used there.
+
+ANTI-FORGETTING ENTRY. Keywords: M1663 dynamic vibrance, 動態亮麗, saturation, colour enhancement, launcher graphics slider.
+window.c apply_vibrance() (adaptive saturation from the pixel's own sat, strength 0 = off), applied to the presented frame
+before upload; strength comes from settings "vibrance" (launcher slider, shared settings) or RECOMP_VIBRANCE; measured
++29.5% mean saturation at 60% with no frame-rate cost. HDR was dropped for this author: the internal display has no HDR
+(EDID lacks HDR static metadata/BT.2020) -- HDR can be revisited on an external HDR display (SDL3 exposes
+HDR_EXTENDED_LINEAR / HDR10_ST2084 swapchain compositions). Release v0.1.7, payload v0.1.7-p5d-24d895c+ab6b1a096ccb.
+LOOKUP: 18.5180 = M1663 (dynamic vibrance) -> 18.5179 [relevant: M1662 DLC-crash fix], 18.5178 [relevant: M1661 Switch pad].
