@@ -523742,3 +523742,8 @@ removed from the launcher and both implementations, and 100% on the normal curve
 slider (the slider still starts off at 0 — a value of 100% means the standard strength, not the old "strong" one). The
 tooltip says 0 = off (default), 100% = standard. Version stays v0.1.7 (author's request); payload
 v0.1.7-p5d-2e04ccf+365d16c4bdea, 300,546,960 B, SHA256 3603C711...E9E77F.
+
+**M1663k — the final strength.** 100% on the (already strong-free) curve was still too strong for the author: the
+saturation scale at full strength is now 2x (was 4x), a light normal lift; the shader source (vibrance.frag) is in the repo
+and compiled with glslc, the CPU fallback uses the same 2x. Version stays v0.1.7; payload
+v0.1.7-p5d-3d91d5d+41d66a247e35, 300,547,386 B, SHA256 24B7E10D...6AC8.
