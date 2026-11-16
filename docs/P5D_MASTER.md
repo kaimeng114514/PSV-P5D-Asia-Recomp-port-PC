@@ -523718,3 +523718,11 @@ before upload; strength comes from settings "vibrance" (launcher slider, shared 
 (EDID lacks HDR static metadata/BT.2020) -- HDR can be revisited on an external HDR display (SDL3 exposes
 HDR_EXTENDED_LINEAR / HDR10_ST2084 swapchain compositions). Release v0.1.7, payload v0.1.7-p5d-24d895c+ab6b1a096ccb.
 LOOKUP: 18.5180 = M1663 (dynamic vibrance) -> 18.5179 [relevant: M1662 DLC-crash fix], 18.5178 [relevant: M1661 Switch pad].
+
+**M1663g — the fix that made it reach the screen.** The author's own on/off screenshots were identical within 0.1%, and the
+present-path investigation found why: apply_vibrance ran on the CPU upload buffer of window.c, but the game presents through
+the GPU fast path (window_present_gpu) which never uses that buffer -- the [VIB] lines only came from a couple of early
+software frames. gfx_gpu.c now presents through the CPU path (no_gpu_present) while the vibrance is on, so the filtered
+buffer is what the window shows; the GPU fast path is bypassed only while the feature is enabled. Verified with window
+captures of the same scene: mean saturation 15.94% (off) -> 31.08% (100%), +95% on the displayed image. Version stays v0.1.7
+at the author's request; payload v0.1.7-p5d-4b39064+011ad1f73797, 300,546,972 B, SHA256 AC4842F8...FEA82.
