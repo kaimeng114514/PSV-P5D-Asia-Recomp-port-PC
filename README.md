@@ -30,6 +30,11 @@
 - **DLC 支持**：启动器可导入追加内容（`reAddcont/PCSH10109`），显示已导入数量／大小，可一键移除；不导入不影响本体。
 - **MOD 支持**：兼容 Reloaded-II 格式 MOD（`Mod.xml` + `Data/` 文件夹）；启动器内导入、显示封面／名称／作者／版本，
   逐个开关并持久化；启用后启动游戏自动替换 CPK 内同名资源。已用社区泳装 MOD 实测模型替换成功。
+
+  ![社区泳装 MOD 示例（Last Surprise Swimwear by Haalyle）](docs/screenshots/mod_swimsuit_last_surprise.png)
+
+  *示例：社区 MOD「Last Surprise Swimwear」by **Haalyle**（来源：<https://gamebanana.com/mods/323588>）——本仓库/发布包**不附带**该 MOD，玩家下载后可在启动器「MOD」页自行导入并启用。*
+
 - **金手指（内置）**：
   - **F5**：自动演奏（开启/关闭，画面上方显示提示框）；
   - **F6**：一键解锁 COMMUNITY 事件、全支援与挑战、歌曲记录全满（顶部 P5 风格提示框显示 1 秒）。
