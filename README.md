@@ -1,4 +1,4 @@
-# P5D-PC — PS Vita『Persona 5: Dancing in Starlight』(PCSH10109) PC 原生移植
+# P5D-PC — PS Vita『Persona 5: Dancing in Starlight』**亞洲版 (PCSH10109)** PC 原生移植
 
 > **目标**：把玩家自备的 PS Vita 版 P5D（PCSH10109, 1.00）**原版游戏二进制一字不改**地在 PC 上运行：
 > CPU 用 **AOT 静态重编译**（原版 ARM/Thumb → x86-64 原生执行，解释器 fallback），系统 API 由本地兼容层（HLE）
@@ -7,6 +7,8 @@
 > **画面/布局/数值由原版游戏代码自己绘制**。
 
 > 仓库：<https://github.com/kaimeng114514/PSV-P5D-Asia-Recomp-port-PC> · 许可：GPL-2（见 [LICENSE](LICENSE) / [NOTICE.md](NOTICE.md)）
+> **⚠️ 仅针对亚洲版移植**：本移植使用亚洲版（PCSH10109）游戏数据开发与测试；**欧美版与日版均未测试**，不保证可用（尤其存档/更新/DLC 兼容性）。
+
 > 本仓库**不包含任何游戏文件、游戏密钥、固件或游戏重编译产物**；玩家必须使用自己合法持有的游戏数据。
 > 详见 [docs/RELEASE_COMPLIANCE.md](docs/RELEASE_COMPLIANCE.md)。
 
