@@ -49,6 +49,11 @@
   - **F6**：一键解锁 COMMUNITY 事件、全支援与挑战、歌曲记录全满（顶部 P5 风格提示框显示 1 秒）。
 - **手柄支持**：DualShock 4 / DualSense、Switch Pro / Joy-Con 的按键提示自动切换；舞曲中按节奏震动。
 
+  | Switch Pro / Joy-Con | DualShock 4 / DualSense | Xbox 手柄 | PC 键盘 |
+  |---|---|---|---|
+  | ![Switch Pro / Joy-Con 按键提示](docs/screenshots/pad_switch_ui.webp) | ![DualShock 4 / DualSense 按键提示](docs/screenshots/pad_dualshock_ui.webp) | ![Xbox 手柄按键提示](docs/screenshots/pad_xbox_ui.webp) | ![PC 键盘按键提示](docs/screenshots/pad_keyboard_ui.webp) |
+
+
 ---
 
 ## 🚀 快速开始（单文件启动器）
@@ -87,10 +92,6 @@
 
 ## 📦 源码
 
-
-  | Switch Pro / Joy-Con | DualShock 4 / DualSense | Xbox 手柄 | PC 键盘 |
-  |---|---|---|---|
-  | ![Switch Pro / Joy-Con 按键提示](docs/screenshots/pad_switch_ui.webp) | ![DualShock 4 / DualSense 按键提示](docs/screenshots/pad_dualshock_ui.webp) | ![Xbox 手柄按键提示](docs/screenshots/pad_xbox_ui.webp) | ![PC 键盘按键提示](docs/screenshots/pad_keyboard_ui.webp) |
 
 - **源码快照**：[`src/`](src/) —— 移植工程源码（对应提交 `6dd5ab9`，405 个文件，约 20 MB；含 pipeline / recompiler /
   runtime / decrypt / packs / third_party / launcher / dev）。即使本地工程被删除，也可以从本仓库恢复并重新构建。
