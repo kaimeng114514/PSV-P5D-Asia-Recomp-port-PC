@@ -27,6 +27,11 @@
 - **NVIDIA AI 插帧**：支持 NVIDIA Smooth Motion（RTX 40/50 + NVIDIA App），启动器自动检测并修复驱动条目；
   实测 30 帧设定下显示帧数 29.8 → 56.0 张/秒。这是驱动级 AI 插帧，不是 DLSS 帧生成。
 - **动态亮丽（Dynamic Vibrance）**：内置自适应饱和度增强，0–100% 可调；低饱和颜色提升多、已饱和颜色几乎不动，肤色与白色不会溢色。
+
+  | 动态亮丽 0%（关闭） | 动态亮丽 50% | 动态亮丽 100% |
+  |---|---|---|
+  | ![动态亮丽 0%（关闭）](docs/screenshots/vibrance_off_0pct.png) | ![动态亮丽 50%](docs/screenshots/vibrance_50pct.png) | ![动态亮丽 100%](docs/screenshots/vibrance_100pct.png) |
+
 - **DLC 支持**：启动器可导入追加内容（`reAddcont/PCSH10109`），显示已导入数量／大小，可一键移除；不导入不影响本体。
 - **MOD 支持**：兼容 Reloaded-II 格式 MOD（`Mod.xml` + `Data/` 文件夹）；启动器内导入、显示封面／名称／作者／版本，
   逐个开关并持久化；启用后启动游戏自动替换 CPK 内同名资源。已用社区泳装 MOD 实测模型替换成功。
