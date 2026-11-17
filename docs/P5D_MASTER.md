@@ -523850,3 +523850,16 @@ fixed, but the author prefers the honest warning); F6's note keeps only 按鍵�
 the community swimwear mod as a built-in sample; it is NOT bundled because its GameBanana license (mod 323588, author Haalyle)
 requires contacting the author first -- the MOD page stays import-your-own. Final v0.1.7 payload
 v0.1.7-p5d-46e1fe0+162a823d5629 (300,651,259 B, SHA256 5A13B493...1C5C).
+
+### 18.5185 M1675 VERSION v0.1.8 (the MOD system, the F6 banner, the 金手指 page and the F5 crash fix ship as a release)
+
+The author asked to move the port from v0.1.7 to v0.1.8 after this round of work: the MOD system now actually applies Reloaded-II
+folder mods (raw CPK entries with the content-relative FileOffset), F6 unlocks COMMUNITY with the author's P5-style banner,
+the launcher has the 金手指 page, and the F5 banner no longer crashes the present in the menus. Version strings live in
+dev/make_p5d_release.py (RELEASE_VERSION = "v0.1.8-p5d") and launcher/hub.cpp (v = "v0.1.8"); the payload version is
+v0.1.8-p5d-d8c9044+162a823d5629 (300,651,261 B, SHA256 F20BE8060DF0E9FAF012E568D433F22D23CAAC3C69E6C78BC4F14AED4A7A8799).
+The community swimwear mod (GameBanana 323588, Haalyle) stays import-only because its license requires contacting the author.
+
+ANTI-FORGETTING ENTRY. Keywords: M1675 v0.1.8 version bump. The port version is dev/make_p5d_release.py's RELEASE_VERSION and
+launcher/hub.cpp's v; v0.1.8 is the MOD-system release (payload v0.1.8-p5d-d8c9044+162a823d5629). Go back to 18.5184 for what it contains.
+LOOKUP: 18.5185 = M1675 (v0.1.8) -> 18.5184 [relevant: the MOD/banner/F5 work it ships].
