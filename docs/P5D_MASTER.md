@@ -523799,3 +523799,33 @@ DanceReady_P5 job -- those screens draw gauge-like pixels, so p5d_chart_active()
 hook cleared Z in a context where that shared branch carries an invalid pointer into the present. p5d_chart_active() now also
 requires that no DanceReady/DanceSelect/DanceRead* job was seen within 0.8 s, so the hook stays inert there while normal play
 still feels the cheat. Version stays v0.1.7; payload v0.1.7-p5d-a02ee36+9c4af4ce7187, 300,558,677 B, SHA256 AE0C5526...AF3D93.
+
+### 18.5183 M1669/M1670 F6 UNLOCKS EVERY COMMUNITY EVENT (FLAG SYSTEM + LIST HOOK) AND, BY THE AUTHOR'S CHOICE, EVERY FLAG
+
+Requested: F6 unlocks all COMMUNITY events. Pure static reverse engineering over eboot.bin (analysis JSON + a 1.17M
+instruction disassembly with a 16,882-entry address-reference table) found: the game's flag system (flagGet/flagSet/
+flagClear = 0x81175134/0x8117515a/0x811751a6 over a global u32 bit array: pointer at 0x81556ab0, count at 0x81556ab4,
+runtime 7936 bits); the COMMU event flag table at 0x812fcaa4 (14 characters x 3 events, ids 7548..7589); and the list
+builder FUN_810c8f78, whose per-event check calls FUN_8108c302 and tests bit0 of the returned record: bit0==1 takes the
+debug/skip path (printf and continue) while bit0==0 actually builds the row (and calls flagGet/flagSet). The >=5 and >=21
+counts in the same function gate content through 0x81094b92(9/10,0).
+
+M1669: F6 (window.c) sets the 42 commu event flags and turns on p5d_commu_cheat; 12 IHOOKs (one per FUN_8108c302 call
+site, pack.toml IHOOKS -> hooks.c recomp_ihook_p5d_cp0..cp11) clear bit0 of the lookup result while the cheat is on, so
+every COMMU path builds its rows. M1670 (author's choice): F6 also fills the whole 7936-bit flag array, which makes the
+song records read as max score / full combo as well (a deliberate all-unlock). Both are MEMORY ONLY: a restart restores
+the real records unless the player saves.
+
+Two build-chain facts learned the hard way: the released game is the MINIMAL build, so the F6 handler had to move next to
+F5 (the #ifndef RECOMP_MINIMAL debug block is compiled out); and a pack.toml IHOOKS edit only takes effect after
+vitarecomp recompile (build alone does not regenerate the C).
+
+ANTI-FORGETTING ENTRY. Keywords: M1669/M1670 F6 COMMUNITY unlock, flag system 0x81556ab0, commu table 0x812fcaa4, list
+builder FUN_810c8f78, bit0 polarity, coverage IHOOKs, minimal build F6, recompile after IHOOKS. F6 in window.c (next to F5,
+compiled in the minimal build) sets the 42 event flags (p5d_commu_flags) plus (M1670) the whole flag array, and enables
+p5d_commu_cheat; the 12 recomp_ihook_p5d_cpN hooks (packs/PCSH10109/hooks.c, registered in pack.toml IHOOKS) CLEAR bit0
+(bit set = skip row; bit clear = build row). Verified by the author in game: all COMMUNITY events unlocked (F6 at the main
+menu); rejected: setting bit0 (hides rows), flag-only unlock (list gates count more flags). Release v0.1.7, payload
+v0.1.7-p5d-e958457+9034e61beebb.
+LOOKUP: 18.5183 = M1669/M1670 (F6 COMMUNITY unlock) -> 18.5182 [relevant: M1665 F5 crash], 18.5181 [relevant: M1664 MOD
+system]. Remember: recompile after editing pack.toml IHOOKS.
