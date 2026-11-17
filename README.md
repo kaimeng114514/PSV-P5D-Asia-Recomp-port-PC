@@ -87,6 +87,11 @@
 
 ## 📦 源码
 
+
+  | Switch Pro / Joy-Con | DualShock 4 / DualSense | Xbox 手柄 | PC 键盘 |
+  |---|---|---|---|
+  | ![Switch Pro / Joy-Con 按键提示](docs/screenshots/pad_switch_ui.webp) | ![DualShock 4 / DualSense 按键提示](docs/screenshots/pad_dualshock_ui.webp) | ![Xbox 手柄按键提示](docs/screenshots/pad_xbox_ui.webp) | ![PC 键盘按键提示](docs/screenshots/pad_keyboard_ui.webp) |
+
 - **源码快照**：[`src/`](src/) —— 移植工程源码（对应提交 `6dd5ab9`，405 个文件，约 20 MB；含 pipeline / recompiler /
   runtime / decrypt / packs / third_party / launcher / dev）。即使本地工程被删除，也可以从本仓库恢复并重新构建。
 - 仓库**不含**游戏数据、固件、解密产物或工具链二进制；这些由玩家自备。
