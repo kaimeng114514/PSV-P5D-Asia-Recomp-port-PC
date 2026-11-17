@@ -523863,3 +523863,27 @@ The community swimwear mod (GameBanana 323588, Haalyle) stays import-only becaus
 ANTI-FORGETTING ENTRY. Keywords: M1675 v0.1.8 version bump. The port version is dev/make_p5d_release.py's RELEASE_VERSION and
 launcher/hub.cpp's v; v0.1.8 is the MOD-system release (payload v0.1.8-p5d-d8c9044+162a823d5629). Go back to 18.5184 for what it contains.
 LOOKUP: 18.5185 = M1675 (v0.1.8) -> 18.5184 [relevant: the MOD/banner/F5 work it ships].
+
+### 18.5186 M1676/M1677/M1678 60 FPS EVIDENCE: THE PORT ALREADY PRESENTS 60 ON EVERY SCREEN; STEP-30 PROBES ARE A NO-OP; FPSSTAT + TEXBREAK INSTRUMENTATION
+
+The author asked to improve the 60 fps using the PersonaDancingRecomp P5D pack's approach (its frames30: the frame-rate
+getter and the swap interval read 60, and the menus' 1/30 s steps are rewritten to 1/60). Static work here:
+- display.c already does it: fps_scope_dance() defaults to all screens since M1606 and swap_interval() returns 1 (60) on
+  all screens in 60 fps mode, with RECOMP_FPS_SCOPE=dance as the old-hybrid A/B; the game's frame-rate getter
+  (fn_811730da/fn_81173118) is already hooked to report 60 (M1636/M1649).
+- 10 sites in the eboot load the 1/30f constant 0x3d088889. IHOOK probes (M1676, log-only then at 0x8103e0a8/0x81044864/
+  0x8104493c/0x81044968/0x8104593a/0x8102eb96/0x8104999a/0x8111b74e/0x8112611a/0x8127f518) showed that the only menu
+  hits are an easing curve (fn_0x8127f500: 1 - (1-t)... cubic ease) and the animation grid/judgement functions; rewriting
+  them to 1/60 does not change menu presentation. Conclusion: the borrowed step-30 rewrite is a NO-OP for this port.
+- Automated run (vitarecomp run, RECOMP_FRAME_RATE=60 + the new [FPSSTAT] from M1677): boot -> title -> main -> song ->
+  dance -> pause reads avg 16.67 ms, max 17.3-17.9 ms, over20ms=0 through the whole flow (30 fps when not forced, 33.33
+  ms). The remaining occasional spike is a first-use texture upload: [TEXBREAK] (M1678) breaks it down (512x512 BC1:
+  hash 0.01 ms, create 0.10, blocks 0.18, submit 0.04, total 9.19) -- the 9 ms is the GPU command-buffer acquisition wait,
+  not the decode/copy; 2048x2048: blocks 3.3-3.6, total 3.7-4.1 ms. Fixing it means GPU submit pacing, not 60 fps logic.
+Both instrumentations are env-gated (RECOMP_P5D_FPSSTAT=0, RECOMP_P5D_TEXBREAK=1) and harmless in release.
+
+ANTI-FORGETTING ENTRY. Keywords: M1676 step30 no-op, fps_scope all since M1606, 1/30f sites, easing fn_0x8127f500, FPSSTAT
+16.67ms over20ms=0, TEXBREAK 9 ms upload = command-buffer acquire. Do not re-try rewriting the 1/30 constants for menu
+framerate; menus already present 60. The 1/30 sites: 0x8102eb8e, 0x8103e0a4, 0x8104485a/0x81044938/0x81044964,
+0x8104592e, 0x81049996, 0x8111b74a (judgement, NEVER), 0x81126116, 0x8127f510. Payload v0.1.8-p5d-ec05c42+773a179fb5cf.
+LOOKUP: 18.5186 = M1676/M1677/M1678 (60 fps evidence) -> 18.5185 [relevant: v0.1.8 release], 18.5184 [relevant: the MOD/F5/F6 work].
