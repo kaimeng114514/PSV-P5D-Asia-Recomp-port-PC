@@ -523829,3 +523829,16 @@ menu); rejected: setting bit0 (hides rows), flag-only unlock (list gates count m
 v0.1.7-p5d-e958457+9034e61beebb.
 LOOKUP: 18.5183 = M1669/M1670 (F6 COMMUNITY unlock) -> 18.5182 [relevant: M1665 F5 crash], 18.5181 [relevant: M1664 MOD
 system]. Remember: recompile after editing pack.toml IHOOKS.
+
+### 18.5184 M1664/M1671/M1672/M1674 THE MOD SYSTEM SHIPS AND WORKS (RAW CPK ENTRIES, CONTENT-RELATIVE OFFSETS), THE F6 BANNER, THE 金手指 TAB, AND THE F5 BANNER CRASH
+
+Requested: make the launcher's MOD enable switch actually change the game, and add an F6 unlock banner plus a 金手指 page.
+
+M1664 (MOD): three separate defects kept the MOD from loading. (1) the release payload ships pipeline/ but not dev/, and the launcher looked for dev/p5d_mods_apply.py -> the script was missing; it now ships in pipeline/ and the launcher looks there first. (2) the launcher passed the library ROOT as P5D_LIB, while the script needs <library>/decrypted/PCSH10109 -> it silently found no CPK; fixed. (3) the CPK patch itself: the TOC FileOffset is RELATIVE to the CPK content start 0x800 (real byte position = FileOffset + 0x800) and the engine accepts entries whose FileSize == ExtractSize as PLAIN (uncompressed) data. The script now appends the mod file at an 0x800-aligned position, sets FileSize = ExtractSize = size and FileOffset = position - 0x800; verified by re-reading the patched entries (byte-identical to the mod files) and by the author: the swimsuit models appear in the dance stage. A controlled experiment wrote the ORIGINAL model raw at the corrected offset first and it loaded fine, which is what isolated the missing 0x800 from the format question (a CRILAYLA encoder was built and validated against CriPakTools' decompressor but turned out unnecessary).
+
+M1671 (banner): F6 shows a P5-style banner (the author's black tilted-border frame, style D: red 社群＋服裝全開 / gold 全支援＋挑戰解鎖 / cream 歌曲記錄全滿) for 1.0 s through the same CPU composite as the F5 banner (banner_commu.h, 1280x185 RGBA).
+M1672 (launcher): a 金手指 tab next to 畫質選項 introduces F5 (auto play) and F6 (unlock), noting both are memory-only.
+M1674 (crash): pressing F5 in the song-select screen crashed the present: the banner's bilinear sampler clamped iy to sh-1 and then read p01/p11 one row PAST the image (fault at window_present_gpu+0x1211, movzbl 0x7(%rcx)); clamped to sh-2/sw-2 with an absurd-frame-size guard. The F5 banner still shows on every screen (author's request).
+
+ANTI-FORGETTING ENTRY. Keywords: M1664 MOD works, CPK FileOffset +0x800 content relative, raw CPK entry FileSize==ExtractSize, pipeline/p5d_mods_apply.py, P5D_LIB decrypted title dir, M1671 F6 banner, M1672 金手指 tab, M1674 F5 banner OOB crash window_present_gpu+0x1211. MOD patch: launcher play runs pipeline/p5d_mods_apply.py with P5D_LIB=<library>/decrypted/<id>; the script restores its state then appends each enabled mod file raw at 0x800 alignment and patches TOC rows (size=extract=len, offset=position-0x800). F6 banner: window.c p5d_banner_show_commu + banner_commu.h. F5 crash fix: clamp iy/ix to sh-2/sw-2 in both banner compositors. Release v0.1.7, payload v0.1.7-p5d-46e37e4+162a823d5629.
+LOOKUP: 18.5184 = M1664/M1671/M1672/M1674 -> 18.5183 [relevant: M1669/M1670 F6 unlock], 18.5181 [relevant: M1664 stage 1 MOD tab].
