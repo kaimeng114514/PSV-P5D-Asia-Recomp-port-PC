@@ -523842,3 +523842,11 @@ M1674 (crash): pressing F5 in the song-select screen crashed the present: the ba
 
 ANTI-FORGETTING ENTRY. Keywords: M1664 MOD works, CPK FileOffset +0x800 content relative, raw CPK entry FileSize==ExtractSize, pipeline/p5d_mods_apply.py, P5D_LIB decrypted title dir, M1671 F6 banner, M1672 金手指 tab, M1674 F5 banner OOB crash window_present_gpu+0x1211. MOD patch: launcher play runs pipeline/p5d_mods_apply.py with P5D_LIB=<library>/decrypted/<id>; the script restores its state then appends each enabled mod file raw at 0x800 alignment and patches TOC rows (size=extract=len, offset=position-0x800). F6 banner: window.c p5d_banner_show_commu + banner_commu.h. F5 crash fix: clamp iy/ix to sh-2/sw-2 in both banner compositors. Release v0.1.7, payload v0.1.7-p5d-46e37e4+162a823d5629.
 LOOKUP: 18.5184 = M1664/M1671/M1672/M1674 -> 18.5183 [relevant: M1669/M1670 F6 unlock], 18.5181 [relevant: M1664 stage 1 MOD tab].
+
+
+**M1672 addendum -- 金手指 page wording (author's request).** F5's note became 可能會偶爾在部分地方觸發閃退 (the menu-banner crash was
+fixed, but the author prefers the honest warning); F6's note keeps only 按鍵後畫面上方會顯示提示框（約 1 秒）; the trailing
+"memory only / nothing written to the save / restart restores" lines were removed from the page. Also: the author asked to bundle
+the community swimwear mod as a built-in sample; it is NOT bundled because its GameBanana license (mod 323588, author Haalyle)
+requires contacting the author first -- the MOD page stays import-your-own. Final v0.1.7 payload
+v0.1.7-p5d-46e1fe0+162a823d5629 (300,651,259 B, SHA256 5A13B493...1C5C).
