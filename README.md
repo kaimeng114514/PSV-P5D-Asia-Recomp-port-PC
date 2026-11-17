@@ -21,7 +21,7 @@
 
   | 原版 960×544（原分辨率） | 2K 2560×1440（3× 超采样） |
   |---|---|
-  | ![原版 960×544](docs/screenshots/resolution_original_960x544.jpg) | ![2K 2560×1440](docs/screenshots/resolution_2k_2560x1440.jpg) |
+  | ![原版 960×544](docs/screenshots/resolution_original_960x544.png) | ![2K 2560×1440](docs/screenshots/resolution_2k_2560x1440.png) |
 
 - **原生 60 帧**：舞池可切换 60 帧（标题／菜单保持原版 30 帧节奏）；时间轴按真实时间推进，不加速、不影响判定。
 - **NVIDIA AI 插帧**：支持 NVIDIA Smooth Motion（RTX 40/50 + NVIDIA App），启动器自动检测并修复驱动条目；
