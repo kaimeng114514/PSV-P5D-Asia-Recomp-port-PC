@@ -523903,4 +523903,4 @@ Payload v0.1.8-p5d-1f3a680+00caaf0be7c1 (300,658,957 B, SHA256 CE0F4A9F36A086058
 ANTI-FORGETTING: keywords M1718 pause page job, seen-then-gone, config menu job live list 0x815554C4, settings
 Cross/Cross/Circle leak, Cross = M note, wheel deburst. window.c: p5d_page_cfg_probe, p5d_pause_seen, Esc block,
 wheel block. Do not reintroduce the clock/picture resume test or hold the closing Cross.
-LOOKUP: 18.5187 -> 18.5186, 18.5184.
+LOOKUP: 18.5187 -> 18.5186 [relevant], 18.5184 [relevant].
