@@ -523904,3 +523904,22 @@ ANTI-FORGETTING: keywords M1718 pause page job, seen-then-gone, config menu job 
 Cross/Cross/Circle leak, Cross = M note, wheel deburst. window.c: p5d_page_cfg_probe, p5d_pause_seen, Esc block,
 wheel block. Do not reintroduce the clock/picture resume test or hold the closing Cross.
 LOOKUP: 18.5187 -> 18.5186 [relevant], 18.5184 [relevant].
+
+### 18.5188 M1731 VERSION v0.1.9 (the pause/wheel/QAZOKM round ships)
+
+The author asked to bump the launcher version after the pause-menu round was accepted. dev/make_p5d_release.py
+RELEASE_VERSION = v0.1.9-p5d; the launcher displays the payload version.txt part before the first '-', so its title
+shows v0.1.9 with no source change (launcher/hub.cpp reads it; the dev-tree fallback there stays v0.1.1).
+Payload v0.1.9-p5d-e9645bc+9f13fd7a140d (300,660,393 B, SHA256 8954F7BB992472142FCFED1C152FABB92F2DA6CB1C1C4325175B88A4C0FAB311).
+What it ships since 18.5187 (all author-verified in the dance and pause menus): M1719 wheel gate accepts our pause/
+config state; M1720 the pause exit is immediate on the mouse back row and right-click; M1721 pause subpage depth;
+M1722 one-Cross back inside a subpage and options do not change the depth; M1723 wheel gate diagnostics;
+M1724/M1725/M1726 game-page identity probe ([PAGE]/[PAGEKIND], page names mns/music option/config menu/appWindow);
+M1728 the job-lookup based state clearing removed (DanceReady_P5 lookups fire while the pause is still up and it
+had dismissed hundreds of wheel events); M1729 right-click exit clears the state at once (the stuck latch kept the
+CONFIG profile so QAZOKM were dead); M1730 the pause depth follows the game PAGE every frame (a single Cross had
+not left the custom-play page, so the counter ran ahead and the next back exited the pause in the wrong page).
+ANTI-FORGETTING: keywords M1731 v0.1.9 version bump. Version comes from RELEASE_VERSION only; the launcher reads
+the payload version.txt. window.c: p5d_page_probe/p5d_page_kind, p5d_page_cfg_probe, p5d_pause_sub synced from the
+page, wheel gate, Esc/rmb/back branches. Do not reintroduce job-lookup clearing or key-count depth.
+LOOKUP: 18.5188 = M1731 (v0.1.9) -> 18.5187 [relevant: the pause/wheel fixes it ships], 18.5185 [relevant: v0.1.8].
