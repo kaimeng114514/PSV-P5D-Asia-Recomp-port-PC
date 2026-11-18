@@ -523887,3 +523887,20 @@ ANTI-FORGETTING ENTRY. Keywords: M1676 step30 no-op, fps_scope all since M1606, 
 framerate; menus already present 60. The 1/30 sites: 0x8102eb8e, 0x8103e0a4, 0x8104485a/0x81044938/0x81044964,
 0x8104592e, 0x81049996, 0x8111b74a (judgement, NEVER), 0x81126116, 0x8127f510. Payload v0.1.8-p5d-ec05c42+773a179fb5cf.
 LOOKUP: 18.5186 = M1676/M1677/M1678 (60 fps evidence) -> 18.5185 [relevant: v0.1.8 release], 18.5184 [relevant: the MOD/F5/F6 work].
+
+### 18.5187 M1710-M1718 ESC/PAUSE/WHEEL: THE PAUSE PAGE IS THE CONFIG APP; THE FINAL STATE IS PURE JOB-LIST CODE
+
+The pause page of P5D runs the config app, so it raises the CONFIG latch: Esc tested CONFIG first and ran the
+main-menu settings exit (Cross then Circle). The extra Circle advanced COMMU dialogue and the Cross was the dance
+M note. Fixes: PAUSE is tested before CONFIG; the closing Cross is cancelled when the page closes (a held Cross
+was read as the M note); PAUSE cannot come from the preloaded pause job (scr==PAUSE in the whole stage).
+The final page state is pure code: p5d_page_cfg_probe() scans the live job list (0x815554C4) for the config-menu
+page job and p5d_pause_seen uses a seen-then-gone rule -- no timer and no picture. A pause closed with the mouse
+返回 row is recognised and the stale latch dropped without sending any key; the first frames of an open (job not
+created yet) never clear the state. Wheel: one SDL notch can arrive as several events; M1706 de-bursts (25 ms),
+one notch = one step, accumulator reset on pause transitions. Author-verified.
+Payload v0.1.8-p5d-1f3a680+00caaf0be7c1 (300,658,957 B, SHA256 CE0F4A9F36A0860588ADE2A2E59D1B86AE46D1A536AD4949914E5B198597EDAB).
+ANTI-FORGETTING: keywords M1718 pause page job, seen-then-gone, config menu job live list 0x815554C4, settings
+Cross/Cross/Circle leak, Cross = M note, wheel deburst. window.c: p5d_page_cfg_probe, p5d_pause_seen, Esc block,
+wheel block. Do not reintroduce the clock/picture resume test or hold the closing Cross.
+LOOKUP: 18.5187 -> 18.5186, 18.5184.
