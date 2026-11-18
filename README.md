@@ -54,6 +54,13 @@
   | ![Switch Pro / Joy-Con 按键提示](docs/screenshots/pad_switch_ui.webp) | ![DualShock 4 / DualSense 按键提示](docs/screenshots/pad_dualshock_ui.webp) | ![Xbox 手柄按键提示](docs/screenshots/pad_xbox_ui.webp) | ![PC 键盘按键提示](docs/screenshots/pad_keyboard_ui.webp) |
 
 
+
+- **完整通关验证**：移植者本人已用本移植版完整通关并连续游玩，全程稳定、未出现闪退；下图为通关后的制作人员名单截图。
+
+  | 通关后制作人员名单（实测截图） |
+  |---|
+  | ![通关后制作人员名单](docs/screenshots/credits_cleared.png) |
+
 ---
 
 ## 🚀 快速开始（单文件启动器）
