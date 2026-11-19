@@ -524150,3 +524150,21 @@ ANTI-FORGETTING: keywords M1749 撤銷導入 remove mod import, mods_delete_tree
 Files: launcher/hub.cpp (mods_delete_tree, per-card button, post-loop removal). Deleting the folder IS the undo:
 the next launch's restore-then-apply puts the original resources back.
 LOOKUP: 18.5203 = M1749 (v0.2.1) -> 18.5181 [relevant: MOD system], 18.5197 [relevant: mods apply], 18.5202 [relevant: version line].
+
+### 18.5204 M1762 (investigation) P5R->P5D nude body: what is known and what is still unknown
+
+The four-female P5R nude body replacement was reduced to a working file format: version 0x01105090, stride-52
+format 0x112 body mesh, one body mesh only, 512x512 DXT1 no-mip nude diffuse, P5D native skeleton/materials.
+Weight transfer by bone NAME (P5R 'Bip01 ...' -> P5D 'Hips/Spine/LeftArm/...', ancestor fallback) makes the body
+deform coherently under the dance animation (no more explosive triangles). The remaining defect is placement: the
+body does not line up with the P5D original head/hair, i.e. the vertices are still in the P5R bind frame while the
+engine multiplies them by the P5D bone world * inverse-bind matrices. Runtime instrumentation was added in
+runtime/gfx/gfx_gpu.c: RECOMP_BONE_DUMP (LDST window floats), RECOMP_BONE_DUMP_WIN (whole 64 KB windows),
+RECOMP_BONE_DUMP3 (windows of the 43968-index body draw), RECOMP_VU_DUMP (the 256 vertex-uniform SA words and the
+4 KB each plausible pointer addresses). None of those dumps contained the bone-matrix palette: the LDST windows have
+garbage floats and the SA-pointed memory has no orthonormal matrix runs. Guest memory is a 4 GB virtual reservation
+(runtime/core/main.c:799, G(a)=recomp_mem+a), so the next step is a bounded 0x20000000-0x30000000 dump plus a C
+scanner looking for the 85-bone matrix array and validating the formula with the rigid parent-child distance
+invariant. The delivered WIP folder is Downloads/P5D_Nude_Females (v1.0); launcher stays v0.2.1.
+ANTI-FORGETTING: keywords M1762 nude body bind frame, bone palette location, RECOMP_VU_DUMP, SA words, rigid distance invariant.
+LOOKUP: 18.5204 = M1762 -> 18.5203 [relevant: MOD page], 18.5181 [relevant: MOD system], 18.5202 [relevant: version line].
