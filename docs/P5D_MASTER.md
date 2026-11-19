@@ -524055,3 +524055,22 @@ ANTI-FORGETTING: keywords M1740 use default does nothing, ATIV_DUMP self-set env
 Files: launcher/hub.cpp main()/change_game_folder (no set_env ATIV_DUMP), library_dir. Do not set ATIV_DUMP inside
 the launcher process again.
 LOOKUP: 18.5196 = M1740 (v0.1.17) -> 18.5195 [relevant: move], 18.5194 [relevant: move version].
+
+### 18.5198 M1742 VERSION v0.1.19 (black screen after moving the library: the fs/app0 junction was lost)
+
+The author moved the library (C: -> D:) and the game then showed a black window forever. session.log showed the
+game booting, then stalling at the CRI file threads, with 'open app0:/data/vita.cpk ... (not found)' and
+'open app0:/data/data.cpk ... (not found)' (a working run opens them). Cause: cmd_import() makes <recomp>/fs/app0 a
+junction to the decrypted <library>/decrypted/<title>/app0 (link_dir), so fs/app0/data/*.cpk are the game's own
+1.5+1.9 GB packs reached through that link. The library move (M1737/M1738) copied the tree but not the junction, so
+fs/app0 stayed an empty ordinary directory: the game had no data and never presented a frame.
+M1742: ensure_fs_link() runs at the start of cmd_run and re-points (or creates) <recomp>/fs/app0 to app0_patched when
+present, else app0 (removing a link-less leftover copy first) -- any moved library repairs itself on the next launch.
+The launcher's move now skips reparse points instead of recursing into them. Verified on the author's own moved
+library: recreating the junction by hand (mklink /J ...) made the title screen appear, and v0.1.19 does that
+automatically.
+Payload v0.1.19-p5d-217df89+9f13fd7a140d (300,798,195 B, SHA256 32C52CFA4435F108CB10058AA0C5E7CFC9FA40FF24AA375121AC55104FA3F7E0).
+ANTI-FORGETTING: keywords M1742 black screen after move, fs/app0 junction, link_dir, fs/app0/data/vita.cpk not found.
+Files: pipeline/vitarecomp.py ensure_fs_link/cmd_run, launcher/hub.cpp move (reparse points). Never move a library by
+copying junctions as directories, and always have cmd_run verify the fs/app0 link.
+LOOKUP: 18.5198 = M1742 (v0.1.19) -> 18.5197 [relevant: launch after move], 18.5195 [relevant: move], 18.5193 [relevant: copy].
