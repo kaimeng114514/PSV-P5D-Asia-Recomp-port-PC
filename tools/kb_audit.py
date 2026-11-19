@@ -17,6 +17,7 @@ SELF = __file__
 
 # anchor table: (section id, short keywords). Keep newest entries first; append new milestones at the top.
 ANCHORS = [
+    ("18.5202", "M1748 v0.2.0: the line moves from 0.1.23 to 0.2.0 (RELEASE_VERSION v0.2.0-p5d; launcher shows the payload prefix; game rebuilds once on next start). Payload v0.2.0-p5d-a01850a+9f13fd7a140d."),
     ("18.5201", "M1747 v0.1.23: a folder holding only leftovers (empty decrypted/) counted as an existing library so the change switched without moving; looks_like_library + prune_empty_dirs fix it and unrelated files now give an explicit error. Payload v0.1.23-p5d-5dee6a9+9f13fd7a140d."),
     ("18.5200", "M1744 v0.1.21: changing the folder aborted on the fs/app0 junction (its target had already been moved); links are skipped before stat, unreadable entries skipped, the picked folder is kept after a failure. Payload v0.1.21-p5d-090db68+9f13fd7a140d."),
     ("18.5199", "M1743 v0.1.20: 使用默認位置 moves the whole library back to the default folder when it is empty (shared switch_game_folder; populated folder used as is). Payload v0.1.20-p5d-321fb3e+9f13fd7a140d."),

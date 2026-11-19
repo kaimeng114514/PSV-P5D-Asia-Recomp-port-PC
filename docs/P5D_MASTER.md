@@ -524122,3 +524122,16 @@ Payload v0.1.23-p5d-5dee6a9+9f13fd7a140d (300,801,749 B, SHA256 D572FA704BCEA05D
 ANTI-FORGETTING: keywords M1747 change folder moves nothing, leftover empty decrypted dir counted as library,
 looks_like_library, prune_empty_dirs. Files: launcher/hub.cpp switch_game_folder/change_game_folder, launcher-move.log.
 LOOKUP: 18.5201 = M1747 (v0.1.23) -> 18.5200 [relevant: move abort], 18.5199 [relevant: folder switching], 18.5195 [relevant: move].
+
+### 18.5202 M1748 VERSION v0.2.0 (the line moves from 0.1.23 to 0.2.0)
+
+The author asked whether a 1.0 jump was sensible; the answer was no yet (a stable release needs a clean regression
+matrix and the fresh move/folder fixes verified end to end), and the suggestion was 0.2.x while stabilising. The
+author chose 0.2.0: dev/make_p5d_release.py RELEASE_VERSION = v0.2.0-p5d. The launcher shows the payload version.txt
+prefix, so its title becomes v0.2.0; the payload stamp changed, so the game rebuilds once on the next start (the
+launcher's ready check compares the tools version with .built_version_min).
+Payload v0.2.0-p5d-a01850a+9f13fd7a140d (300,801,748 B, SHA256 FC3D930F91D6F319D40246E19518EAE48036D59C51F30D8D3CFAA9F041901BA1).
+ANTI-FORGETTING: keywords M1748 v0.2.0 version bump, 0.1.23 -> 0.2.0. Version comes from RELEASE_VERSION only; the
+launcher reads the payload version.txt. Do not jump to 1.0 before the regression matrix (clean install, import,
+build, play, pause/wheel, MOD, move library, upgrade over an older install) passes.
+LOOKUP: 18.5202 = M1748 (v0.2.0) -> 18.5201 [relevant: last 0.1.x fix], 18.5189/18.5198 [relevant: launcher features it ships].
