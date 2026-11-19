@@ -524011,3 +524011,19 @@ Payload v0.1.15-p5d-bd247f2+9f13fd7a140d (300,796,705 B, SHA256 6F95CBB5A83FF6C0
 ANTI-FORGETTING: keywords M1737 move library, MoveFileW rename, cross-volume copy then delete, no second copy.
 Files: launcher/hub.cpp move_library/delete_tree/change_game_folder. Do not go back to copy-only.
 LOOKUP: 18.5194 = M1737 (v0.1.15) -> 18.5193 [relevant: the copy version it replaces], 18.5192 [relevant: build path].
+
+### 18.5195 M1738/M1739 VERSION v0.1.16 (cross-volume move is per file; the copy buffer overflowed the stack)
+
+The author wanted the cross-disk folder change to be a move, not a copy. M1738: move_library() now uses
+move_files_progressive() off the same volume: each file is copied to the new folder and then removed from the old
+one, so the two disks never hold the whole library twice (total stays about one library); a failure rolls the
+already-moved files back, so the library is never split between the folders. Same volume still renames instantly.
+M1739: the 1 MB copy buffer was on the stack and the recursive functions overflowed the 1 MB Windows stack
+(0xC00000FD in a standalone test); it is now a thread_local buffer.
+Tested standalone with the same functions: progressive move (old folder gone, nested files present, a pre-existing
+file in the target kept) and rollback (copy blocked, source restored, move returns false) both pass.
+Payload v0.1.16-p5d-834c9f1+9f13fd7a140d (300,797,658 B, SHA256 B6B28EDEC624784BF567BA0D550D2082B55B9FFAE59FA4911182559A9F4B0A38).
+ANTI-FORGETTING: keywords M1738 cross-volume per-file move, rollback, M1739 thread_local copy buffer, stack overflow.
+Files: launcher/hub.cpp move_files_progressive/move_library/copy_tree. Do not put a 1 MB array on the stack in
+recursive tree walks, and do not copy the whole library before deleting the source.
+LOOKUP: 18.5195 = M1738/M1739 (v0.1.16) -> 18.5194 [relevant: move version], 18.5193 [relevant: copy version].
