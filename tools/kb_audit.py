@@ -17,6 +17,7 @@ SELF = __file__
 
 # anchor table: (section id, short keywords). Keep newest entries first; append new milestones at the top.
 ANCHORS = [
+    ("18.5205", "M1771 v0.3.0: P5D nude swimsuit MOD delivered as native-geometry body + skin texture in Downloads/P5D_Nude_Females; verified in game through RECOMP_UI_CMD navigation (COLLECTION costume list, Ann tropical bikini renders nude, attached)."),
     ("18.5204", "M1762 investigation: P5R->P5D nude body is format-correct and deforms with name-mapped weights, but the vertices stay in the P5R bind frame, so the body does not line up with the P5D head; runtime palette dumps (RECOMP_BONE_DUMP/WIN/3/VU) so far found no bone-matrix array. WIP folder Downloads/P5D_Nude_Females v1.0."),
     ("18.5203", "M1749 v0.2.1: 撤銷導入 button at the bottom-right of every MOD card deletes that mod folder, rewrites mods.ini and rescans; the next launch restores the replaced CPK resources. Payload v0.2.1-p5d-2adc904+9f13fd7a140d."),
     ("18.5202", "M1748 v0.2.0: the line moves from 0.1.23 to 0.2.0 (RELEASE_VERSION v0.2.0-p5d; launcher shows the payload prefix; game rebuilds once on next start). Payload v0.2.0-p5d-a01850a+9f13fd7a140d."),

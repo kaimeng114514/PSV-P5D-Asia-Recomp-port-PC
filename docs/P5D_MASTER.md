@@ -524168,3 +524168,18 @@ scanner looking for the 85-bone matrix array and validating the formula with the
 invariant. The delivered WIP folder is Downloads/P5D_Nude_Females (v1.0); launcher stays v0.2.1.
 ANTI-FORGETTING: keywords M1762 nude body bind frame, bone palette location, RECOMP_VU_DUMP, SA words, rigid distance invariant.
 LOOKUP: 18.5204 = M1762 -> 18.5203 [relevant: MOD page], 18.5181 [relevant: MOD system], 18.5202 [relevant: version line].
+
+### 18.5205 M1771 v0.3.0 P5D nude swimsuit replacement (native-geometry skin body, verified in game)
+
+The four-female swimsuit-replacement MOD is delivered at Downloads/P5D_Nude_Females (v3.0): it replaces
+dance/player/p5/pc204|206|207|208_07.GMD with the ORIGINAL P5D body geometry and a skin-coloured 512x512 DXT1
+texture (the bikini is painted on the texture, so a texture swap gives a nude body without touching the rig). The
+earlier v2 (P5R-shape morph) and v1 (P5R mesh with name-mapped weights) are superseded: v1's body did not line up
+with the P5D head. Material/texture/version stay P5D-native (0x01105090).
+IN-GAME VERIFICATION: the game is driven through the runtime's own debug menu channel RECOMP_UI_CMD=<file>
+(window.c ui_cmd_tick: d/u/e/b/h/c/q/p taps and menu confirms), which reaches COLLECTION -> character list ->
+costume list without depending on window focus; screenshots confirm Ann on the tropical-bikini slot renders a
+nude skin-toned body attached to the head, in the costume preview and the watch (dance) view. Files:
+C:/dev/tmp/P5D_Morph2 (build), C:/dev/tmp/_morph4.py/_textureonly.py (generator).
+ANTI-FORGETTING: keywords M1771 nude swimsuit texture-only, native rig, RECOMP_UI_CMD, COLLECTION costume list.
+LOOKUP: 18.5205 = M1771 -> 18.5204 [relevant: bind-frame investigation], 18.5203 [relevant: MOD page], 18.5181 [relevant: MOD system].
