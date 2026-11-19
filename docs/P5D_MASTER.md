@@ -524135,3 +524135,18 @@ ANTI-FORGETTING: keywords M1748 v0.2.0 version bump, 0.1.23 -> 0.2.0. Version co
 launcher reads the payload version.txt. Do not jump to 1.0 before the regression matrix (clean install, import,
 build, play, pause/wheel, MOD, move library, upgrade over an older install) passes.
 LOOKUP: 18.5202 = M1748 (v0.2.0) -> 18.5201 [relevant: last 0.1.x fix], 18.5189/18.5198 [relevant: launcher features it ships].
+
+### 18.5203 M1749 VERSION v0.2.1 (撤銷導入: a remove button on every imported MOD card)
+
+Asked for a way to undo a MOD import, the MOD page now draws a red 撤銷導入 button at the bottom-right of each mod
+card (its own group, right-aligned inside the card's 5em preview height). Clicking it deletes that mod's folder
+recursively under <library>/decrypted/PCSH10109/recomp/mods, rewrites mods.ini from a fresh scan (so the mod is no
+longer enabled) and refreshes the list. Because the CPK patches are re-applied at every launch by
+pipeline/p5d_mods_apply.py (restore-then-apply), the next game start restores the resources that mod had replaced.
+The nude-model line was also brought back to the v8 weight scheme (nearest-original-vertex weights, original
+texture) after the later weight/matrix experiments regressed it; that rollback changed no launcher behaviour.
+Payload v0.2.1-p5d-2adc904+9f13fd7a140d (300,802,045 B, SHA256 F8EA00921EC4E65AB6A802FA06A58FEB2F43C3DFE678618C0AB0DB1757DD62A7).
+ANTI-FORGETTING: keywords M1749 撤銷導入 remove mod import, mods_delete_tree, mods_scan/mods_save after delete.
+Files: launcher/hub.cpp (mods_delete_tree, per-card button, post-loop removal). Deleting the folder IS the undo:
+the next launch's restore-then-apply puts the original resources back.
+LOOKUP: 18.5203 = M1749 (v0.2.1) -> 18.5181 [relevant: MOD system], 18.5197 [relevant: mods apply], 18.5202 [relevant: version line].
