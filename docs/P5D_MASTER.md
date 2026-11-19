@@ -523982,3 +523982,18 @@ Payload v0.1.13-p5d-b4a08fa+9f13fd7a140d (300,794,323 B, SHA256 2DE4011047F2F74F
 ANTI-FORGETTING: keywords M1735 build used old library, ATIV_DUMP child environment, _putenv_s not propagate,
 CreateProcessW environment block. Files: launcher/hub.cpp proc_start(). Do not spawn steps with env.empty().
 LOOKUP: 18.5192 = M1735 (v0.1.13) -> 18.5191 [relevant: the folder section], 18.5189 [relevant: p5d_libdir].
+
+### 18.5193 M1736 VERSION v0.1.14 (changing the game folder copies the existing library, saves included)
+
+The author changed the game folder after the game was built and the saves looked gone: the saves live inside the
+library, so switching to an empty folder made the launcher show an empty library (the old files were not deleted).
+M1736: change_game_folder() now checks the picked folder. If it is empty and the current library has content, it
+copies the whole library there in the background (portable copy_tree(), because the force-included win32_compat.h
+defines a sync() macro that breaks <filesystem>) and switches only after the copy finishes; the old folder is left
+untouched as a backup. A non-empty folder is used as it is. The P5D section shows the copy in progress and an error
+if it fails (location unchanged then). Manually moving the library folder with the launcher closed works too: the
+launcher only needs the folder selected afterwards.
+Payload v0.1.14-p5d-9bff396+9f13fd7a140d (300,796,294 B, SHA256 67097329F39146487E2ABDF81CA8B088C10F2E13D73FFE1B6148A204EF2D008F).
+ANTI-FORGETTING: keywords M1736 move library when changing folder, saves inside library, copy_tree, no <filesystem>
+(win32_compat sync macro). Files: launcher/hub.cpp change_game_folder/game_folder_move_poll/copy_tree, p5d_ui section 3.
+LOOKUP: 18.5193 = M1736 (v0.1.14) -> 18.5192 [relevant: build path fix], 18.5189 [relevant: the folder setting].
