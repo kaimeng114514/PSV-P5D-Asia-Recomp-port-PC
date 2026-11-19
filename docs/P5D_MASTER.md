@@ -523954,3 +523954,16 @@ Payload v0.1.11-p5d-df37ba5+9f13fd7a140d (300,793,703 B, SHA256 8CB6CA58A15EB7F3
 ANTI-FORGETTING: keywords M1733 打開文件夾 freeze, SDL_OpenURL blocking UI thread, ShellExecuteW open folder.
 Files: launcher/hub.cpp open_folder(). Do not go back to SDL_OpenURL for folders on Windows.
 LOOKUP: 18.5190 = M1733 (v0.1.11) -> 18.5189 [relevant: the folder feature it fixes], 18.5188 [relevant: v0.1.9].
+
+### 18.5191 M1734 VERSION v0.1.12 (the section is 遊戲構建後存放位置 and shows where the built game is)
+
+The author found the old label (遊戲檔案存放位置) unclear; they meant the location of the whole game after building.
+The section is renamed 遊戲構建後存放位置, its text says the whole game (program, saves, firmware, MODs) lives
+there, and it now shows, under 當前, the built game's own folder <library>/decrypted/PCSH10109/recomp with an
+打開遊戲文件夾 button (only once a build exists). Behaviour unchanged: the default is the per-user app data folder,
+the choice is kept in launcher.ini (p5d_libdir), and every stage gets it as ATIV_DUMP, so building, saves and MODs
+follow it.
+Payload v0.1.12-p5d-c31f7f1+9f13fd7a140d (300,793,781 B, SHA256 BFD7E1F561F74FDE87F1FF8CE564855FF5C0E3739B0E76F2A5096162273FCE10).
+ANTI-FORGETTING: keywords M1734 遊戲構建後存放位置, built game folder display, open game folder. Files: launcher/hub.cpp
+p5d_ui section 3 (g_dump + /decrypted/PCSH10109/recomp), libentry wording. Do not rename back to 遊戲檔案存放位置.
+LOOKUP: 18.5191 = M1734 (v0.1.12) -> 18.5190 [relevant: open-folder fix], 18.5189 [relevant: the folder feature].
