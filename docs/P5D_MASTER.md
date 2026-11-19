@@ -524089,3 +524089,20 @@ ANTI-FORGETTING: keywords M1743 use default should move library back, switch_gam
 Files: launcher/hub.cpp switch_game_folder/change_to_default_folder/change_game_folder, game_folder_move_poll.
 Both buttons must move the library, never silently switch to an empty folder.
 LOOKUP: 18.5199 = M1743 (v0.1.20) -> 18.5198 [relevant: moved-library repair], 18.5196 [relevant: use-default fix], 18.5195 [relevant: move].
+
+### 18.5200 M1744 VERSION v0.1.21 (changing the folder could not finish: the fs/app0 junction aborted the move)
+
+After 使用默認位置 moved the library back to C:, the author picked D:\p5d and pressed 更改文件夾: nothing moved, the
+picked folder vanished, the library stayed where it was. Cause: the library has one junction, <recomp>/fs/app0 ->
+decrypted/<title>/app0 (link_dir in cmd_import). move_files_progressive() walks decrypted/<title> in order: it moved
+app0 first (files copied, source files deleted), and only then reached recomp/fs/app0 -- by then the junction's
+target was gone, stat() failed, and the function returned false. The rollback deleted the partly copied target folder
+(so the player's picked folder disappeared) and the library stayed at the old place. M1744: the reparse-point
+attribute is checked BEFORE stat() and links are skipped (the pipeline re-points fs/app0 on every run), unreadable
+entries are skipped instead of aborting, and after a failed move the picked folder is kept; the error text now names
+the failing path. Verified standalone with a broken junction inside the source tree: the move succeeds.
+Payload v0.1.21-p5d-090db68+9f13fd7a140d (300,798,648 B, SHA256 5D990AF46CA5D8F953DC5220137FD0147AB467438F384FD72F2667C493DBD661).
+ANTI-FORGETTING: keywords M1744 change folder moves nothing, fs/app0 junction broken during move, rollback deletes
+picked folder. Files: launcher/hub.cpp move_files_progressive/move_library/switch_game_folder. Check reparse points
+before stat; never let one link abort a whole-library move.
+LOOKUP: 18.5200 = M1744 (v0.1.21) -> 18.5199 [relevant: use default move], 18.5198 [relevant: fs/app0], 18.5195 [relevant: move].
