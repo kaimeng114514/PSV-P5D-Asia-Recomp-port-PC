@@ -17,6 +17,7 @@ SELF = __file__
 
 # anchor table: (section id, short keywords). Keep newest entries first; append new milestones at the top.
 ANCHORS = [
+    ("18.5197", "M1741 v0.1.18: a locked session.log no longer stops the game launch (rotation and tee fall back; log goes to session.log.<pid>). Payload v0.1.18-p5d-95692e1+9f13fd7a140d."),
     ("18.5195", "M1738/M1739 v0.1.16: cross-volume move is per file (copy then delete each, rollback on failure; no doubled space), and the recursive copy buffer is thread_local (1 MB stack overflow). Payload v0.1.16-p5d-834c9f1+9f13fd7a140d."),
     ("18.5194", "M1737 v0.1.15: changing to an empty folder MOVES the library (same volume: rename; cross volume: copy then delete source), no doubled disk use. Payload v0.1.15-p5d-bd247f2+9f13fd7a140d."),
     ("18.5193", "M1736 v0.1.14: changing the game folder to an empty folder copies the existing library (saves included) there in the background and switches after the copy; old folder kept as backup. Manual move also works. Payload v0.1.14-p5d-9bff396+9f13fd7a140d."),

@@ -524027,3 +524027,17 @@ ANTI-FORGETTING: keywords M1738 cross-volume per-file move, rollback, M1739 thre
 Files: launcher/hub.cpp move_files_progressive/move_library/copy_tree. Do not put a 1 MB array on the stack in
 recursive tree walks, and do not copy the whole library before deleting the source.
 LOOKUP: 18.5195 = M1738/M1739 (v0.1.16) -> 18.5194 [relevant: move version], 18.5193 [relevant: copy version].
+
+### 18.5197 M1741 VERSION v0.1.18 (a locked session.log no longer stops the launch)
+
+After moving the library the author could not open the game. Reproduced with the installed v0.1.17 launcher: the
+run step aborted before starting the game with
+  PermissionError: [WinError 32] ... 'D:\app\p5d\decrypted\PCSH10109\recomp\session.log' -> 'session.prev.log'
+(and tee_run would fail the same way opening session.log). A leftover game process or an AV scan holds the moved
+session.log, and the launch died on it. M1741: the previous-log rotation is wrapped (OSError -> message, carry on)
+and tee_run opens session.log.<pid> when session.log cannot be opened, so the game always starts.
+Verified with the file held open exclusively: game_host_min started.
+Payload v0.1.18-p5d-95692e1+9f13fd7a140d (300,797,803 B, SHA256 43BCC09F8CD1E3E212DDA2AF62FD6D09DE9FC85E321C738DED889FD3E1A5EAEC).
+ANTI-FORGETTING: keywords M1741 game won't open after move, session.log WinError 32, session.prev.log rotation.
+Files: pipeline/vitarecomp.py cmd_run/tee_run. The run must never die because a log file is busy.
+LOOKUP: 18.5197 = M1741 (v0.1.18) -> 18.5196 [relevant: folder switching], 18.5195 [relevant: library move].
