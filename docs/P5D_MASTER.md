@@ -523923,3 +523923,21 @@ ANTI-FORGETTING: keywords M1731 v0.1.9 version bump. Version comes from RELEASE_
 the payload version.txt. window.c: p5d_page_probe/p5d_page_kind, p5d_page_cfg_probe, p5d_pause_sub synced from the
 page, wheel gate, Esc/rmb/back branches. Do not reintroduce job-lookup clearing or key-count depth.
 LOOKUP: 18.5188 = M1731 (v0.1.9) -> 18.5187 [relevant: the pause/wheel fixes it ships], 18.5185 [relevant: v0.1.8].
+
+### 18.5189 M1732 VERSION v0.1.10 (the launcher can put the game files folder anywhere)
+
+The author asked whether the launcher could let a player choose where the built game files live, with the default
+when they do not choose. Implemented in launcher/hub.cpp: library_dir() now reads prefs p5d_libdir (launcher.ini)
+between ATIV_DUMP and the defaults, and prefs are loaded before the library choice in main(). The P5D single-page
+launcher gets a new section 3 on 主頁, 遊戲檔案存放位置: the current folder, 更改文件夾… (the native IFileOpenDialog
+folder picker, link -lole32 -lshell32 -luuid), 使用默認位置 and 打開文件夾, the default path, and a note that
+changing it after importing starts an empty library. The generic hub Settings also gets a Storage tab. The choice is
+stored in launcher.ini and every stage the launcher starts gets the folder as ATIV_DUMP (pipeline/datadir.py reads
+the same), so decrypt, build, saves, firmware and MODs all follow it. Default unchanged: %LOCALAPPDATA%\P5D-Port\P5D\library.
+Verified with the packaged launcher: header v0.1.10, section 3 shows the chosen folder (ATIV_DUMP in the test) and
+the default; a prefs p5d_libdir=C:\dev\tmp\testlib made the dev launcher show that path.
+Payload v0.1.10-p5d-d979ccb+9f13fd7a140d (300,793,770 B, SHA256 335E06C1C71E2AD78DF470831B6F0A213AF1B159B95D720DD62C15BBCFF64277).
+ANTI-FORGETTING: keywords M1732 custom game files folder, launcher.ini p5d_libdir, IFileOpenDialog folder picker,
+library_dir/library_default_dir, ATIV_DUMP. Files: launcher/hub.cpp (library_dir, pick_folder_dialog, p5d_ui section 3,
+settings Storage tab), dev/build_p5d_launcher.ps1 (link libs), dev/make_p5d_release.py (RELEASE_VERSION).
+LOOKUP: 18.5189 = M1732 (v0.1.10) -> 18.5188 [relevant: v0.1.9], 18.5185 [relevant: launcher version rule].
