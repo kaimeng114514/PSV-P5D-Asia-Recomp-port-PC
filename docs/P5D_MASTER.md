@@ -524041,3 +524041,17 @@ Payload v0.1.18-p5d-95692e1+9f13fd7a140d (300,797,803 B, SHA256 43BCC09F8CD1E3E2
 ANTI-FORGETTING: keywords M1741 game won't open after move, session.log WinError 32, session.prev.log rotation.
 Files: pipeline/vitarecomp.py cmd_run/tee_run. The run must never die because a log file is busy.
 LOOKUP: 18.5197 = M1741 (v0.1.18) -> 18.5196 [relevant: folder switching], 18.5195 [relevant: library move].
+
+### 18.5196 M1740 VERSION v0.1.17 (使用默認位置 / use default works)
+
+The author reported that 使用默認位置 did nothing. Cause: the launcher set ATIV_DUMP in its own process environment at
+startup (set_env), and library_dir() reads the environment before the prefs, so after clearing p5d_libdir the new
+choice resolved back to the old path; switching to an already populated folder had the same problem.
+M1740: the launcher no longer writes ATIV_DUMP into its own environment (child steps get it explicitly since M1735);
+the handlers compute the path directly (library_default_dir() for the default, the picked path for a switch). An
+externally set ATIV_DUMP is still honoured at startup.
+Payload v0.1.17-p5d-ce5abc8+9f13fd7a140d (300,797,627 B, SHA256 04DF617D5C1ED7CFCD6E508B780CB0F520AF7D44A1FEB82C633390781D00EFAF).
+ANTI-FORGETTING: keywords M1740 use default does nothing, ATIV_DUMP self-set environment, library_dir precedence.
+Files: launcher/hub.cpp main()/change_game_folder (no set_env ATIV_DUMP), library_dir. Do not set ATIV_DUMP inside
+the launcher process again.
+LOOKUP: 18.5196 = M1740 (v0.1.17) -> 18.5195 [relevant: move], 18.5194 [relevant: move version].
