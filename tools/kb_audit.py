@@ -17,6 +17,7 @@ SELF = __file__
 
 # anchor table: (section id, short keywords). Keep newest entries first; append new milestones at the top.
 ANCHORS = [
+    ("18.5192", "M1735 v0.1.13: a rebuild after changing the folder uses the new folder -- steps now get ATIV_DUMP explicitly (env.empty() made the child inherit the startup environment). Payload v0.1.13-p5d-b4a08fa+9f13fd7a140d."),
     ("18.5191", "M1734 v0.1.12: the section is 遊戲構建後存放位置 (the whole game after building), shows the built game folder <library>/decrypted/PCSH10109/recomp and a button to open it. Payload v0.1.12-p5d-c31f7f1+9f13fd7a140d."),
     ("18.5190", "M1733 v0.1.11: 打開文件夾 no longer freezes -- open_folder uses ShellExecuteW (async) and creates the folder first; SDL_OpenURL blocked the UI thread on Windows. Payload v0.1.11-p5d-df37ba5+9f13fd7a140d."),
     ("18.5189", "M1732 v0.1.10: the launcher can put the game files folder anywhere (prefs p5d_libdir, native folder picker, default unchanged; every stage gets it as ATIV_DUMP). Payload v0.1.10-p5d-d979ccb+9f13fd7a140d."),

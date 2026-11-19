@@ -523967,3 +523967,18 @@ Payload v0.1.12-p5d-c31f7f1+9f13fd7a140d (300,793,781 B, SHA256 BFD7E1F561F74FDE
 ANTI-FORGETTING: keywords M1734 遊戲構建後存放位置, built game folder display, open game folder. Files: launcher/hub.cpp
 p5d_ui section 3 (g_dump + /decrypted/PCSH10109/recomp), libentry wording. Do not rename back to 遊戲檔案存放位置.
 LOOKUP: 18.5191 = M1734 (v0.1.12) -> 18.5190 [relevant: open-folder fix], 18.5189 [relevant: the folder feature].
+
+### 18.5192 M1735 VERSION v0.1.13 (a rebuild after changing the folder now uses the new folder)
+
+The author changed the game-files folder and pressed 重新構建: the build still wrote into the old library. Cause:
+build steps were spawned with an empty environment vector, so CreateProcessW inherited the child environment from
+the launcher's OS block; _putenv_s (set_env) updated the CRT copy but the inherited block still carried the ATIV_DUMP
+taken at startup. proc_start() now always builds the environment block and adds ATIV_DUMP=<g_dump> explicitly (plus
+the step's own NAME=value list). Verified with p5d_libdir=C:\dev\tmp\customlib and no ATIV_DUMP: ATIV_TASK=build
+fails on C:\dev\tmp\customlib\decrypted\PCSH10109\elf\libc.suprx.elf, i.e. the child got the new folder.
+Note for the player: changing the location gives a new, empty library, so the game and firmware are imported there
+again (as the section says); the old folder is left untouched.
+Payload v0.1.13-p5d-b4a08fa+9f13fd7a140d (300,794,323 B, SHA256 2DE4011047F2F74FB9F532E0E49BDEAD46E6CE1B59CA496207735DA69B38F25F).
+ANTI-FORGETTING: keywords M1735 build used old library, ATIV_DUMP child environment, _putenv_s not propagate,
+CreateProcessW environment block. Files: launcher/hub.cpp proc_start(). Do not spawn steps with env.empty().
+LOOKUP: 18.5192 = M1735 (v0.1.13) -> 18.5191 [relevant: the folder section], 18.5189 [relevant: p5d_libdir].
