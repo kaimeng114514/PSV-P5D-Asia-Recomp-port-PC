@@ -524074,3 +524074,18 @@ ANTI-FORGETTING: keywords M1742 black screen after move, fs/app0 junction, link_
 Files: pipeline/vitarecomp.py ensure_fs_link/cmd_run, launcher/hub.cpp move (reparse points). Never move a library by
 copying junctions as directories, and always have cmd_run verify the fs/app0 link.
 LOOKUP: 18.5198 = M1742 (v0.1.19) -> 18.5197 [relevant: launch after move], 18.5195 [relevant: move], 18.5193 [relevant: copy].
+
+### 18.5199 M1743 VERSION v0.1.20 (使用默認位置 moves the library back)
+
+The author moved the library to D: and then clicked 使用默認位置: it switched the path to the empty default folder
+instead of bringing the built game back (an empty library again). M1743: the two folder buttons now share
+switch_game_folder(picked, is_default): when the target folder is empty and the current library has content, the
+library is moved there first (same move as M1737/M1738: rename on one volume, per-file cross volume, rollback on
+failure) and the switch happens when the move finished; the preference p5d_libdir is cleared for the default and
+set to the picked folder otherwise. An already populated folder is used as it is. The section text says the default
+button moves the library back too.
+Payload v0.1.20-p5d-321fb3e+9f13fd7a140d (300,798,426 B, SHA256 8498D0BA547A9073F4634AB28C4C19710EFCB677063516974969C6E29D5718A4).
+ANTI-FORGETTING: keywords M1743 use default should move library back, switch_game_folder, g_move_clear_pref.
+Files: launcher/hub.cpp switch_game_folder/change_to_default_folder/change_game_folder, game_folder_move_poll.
+Both buttons must move the library, never silently switch to an empty folder.
+LOOKUP: 18.5199 = M1743 (v0.1.20) -> 18.5198 [relevant: moved-library repair], 18.5196 [relevant: use-default fix], 18.5195 [relevant: move].

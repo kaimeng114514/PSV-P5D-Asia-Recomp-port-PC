@@ -17,6 +17,7 @@ SELF = __file__
 
 # anchor table: (section id, short keywords). Keep newest entries first; append new milestones at the top.
 ANCHORS = [
+    ("18.5199", "M1743 v0.1.20: 使用默認位置 moves the whole library back to the default folder when it is empty (shared switch_game_folder; populated folder used as is). Payload v0.1.20-p5d-321fb3e+9f13fd7a140d."),
     ("18.5198", "M1742 v0.1.19: black screen after moving the library -- fs/app0 is a junction to the decrypted app0 and the move lost it; ensure_fs_link() re-points it on every run and the move skips reparse points. Payload v0.1.19-p5d-217df89+9f13fd7a140d."),
     ("18.5196", "M1740 v0.1.17: use default works -- the launcher no longer sets ATIV_DUMP in its own environment (library_dir read it first); handlers compute the path directly. Payload v0.1.17-p5d-ce5abc8+9f13fd7a140d."),
     ("18.5197", "M1741 v0.1.18: a locked session.log no longer stops the game launch (rotation and tee fall back; log goes to session.log.<pid>). Payload v0.1.18-p5d-95692e1+9f13fd7a140d."),
