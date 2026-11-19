@@ -523941,3 +523941,16 @@ ANTI-FORGETTING: keywords M1732 custom game files folder, launcher.ini p5d_libdi
 library_dir/library_default_dir, ATIV_DUMP. Files: launcher/hub.cpp (library_dir, pick_folder_dialog, p5d_ui section 3,
 settings Storage tab), dev/build_p5d_launcher.ps1 (link libs), dev/make_p5d_release.py (RELEASE_VERSION).
 LOOKUP: 18.5189 = M1732 (v0.1.10) -> 18.5188 [relevant: v0.1.9], 18.5185 [relevant: launcher version rule].
+
+### 18.5190 M1733 VERSION v0.1.11 (the 打開文件夾 button no longer freezes the launcher)
+
+The author reported that pressing 打開文件夾 in the new game-files-folder section froze the launcher. open_folder()
+used SDL_OpenURL(file:///...) on Windows: the shell's open-verb processing ran on the launcher's UI thread and the
+window stopped responding. Fixed: open_folder() creates the folder (a missing one would put the shell's own error
+dialog up) and calls ShellExecuteW(..., L"open", ...) -- asynchronous, the same call the game's p5d_open_path helper
+already used. Verified by clicking the button in the running dev launcher: the process kept Responding=True and its
+window stayed alive.
+Payload v0.1.11-p5d-df37ba5+9f13fd7a140d (300,793,703 B, SHA256 8CB6CA58A15EB7F39F2D95258B70616AF115C582675650FA6562DE35CF682EB0).
+ANTI-FORGETTING: keywords M1733 打開文件夾 freeze, SDL_OpenURL blocking UI thread, ShellExecuteW open folder.
+Files: launcher/hub.cpp open_folder(). Do not go back to SDL_OpenURL for folders on Windows.
+LOOKUP: 18.5190 = M1733 (v0.1.11) -> 18.5189 [relevant: the folder feature it fixes], 18.5188 [relevant: v0.1.9].

@@ -17,6 +17,7 @@ SELF = __file__
 
 # anchor table: (section id, short keywords). Keep newest entries first; append new milestones at the top.
 ANCHORS = [
+    ("18.5190", "M1733 v0.1.11: 打開文件夾 no longer freezes -- open_folder uses ShellExecuteW (async) and creates the folder first; SDL_OpenURL blocked the UI thread on Windows. Payload v0.1.11-p5d-df37ba5+9f13fd7a140d."),
     ("18.5189", "M1732 v0.1.10: the launcher can put the game files folder anywhere (prefs p5d_libdir, native folder picker, default unchanged; every stage gets it as ATIV_DUMP). Payload v0.1.10-p5d-d979ccb+9f13fd7a140d."),
     ("18.5188", "M1731 v0.1.9: RELEASE_VERSION v0.1.9-p5d (the launcher shows the payload version.txt prefix); payload v0.1.9-p5d-e9645bc+9f13fd7a140d. Ships the pause/wheel/QAZOKM round: page-kind state machine, action-owned pause state, page-driven depth, wheel gate."),
     ("18.5187", "M1710-M1718 Esc/pause/wheel: the pause page runs the config app and raises the CONFIG latch; Esc now tests PAUSE first, the closing Cross is cancelled when the page closes, and the page state comes from the config-menu job in the live job list (seen-then-gone rule, no timer, no picture). Wheel: one notch one step, 25 ms de-burst. Payload v0.1.8-p5d-1f3a680+00caaf0be7c1."),
