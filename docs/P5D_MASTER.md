@@ -524106,3 +524106,19 @@ ANTI-FORGETTING: keywords M1744 change folder moves nothing, fs/app0 junction br
 picked folder. Files: launcher/hub.cpp move_files_progressive/move_library/switch_game_folder. Check reparse points
 before stat; never let one link abort a whole-library move.
 LOOKUP: 18.5200 = M1744 (v0.1.21) -> 18.5199 [relevant: use default move], 18.5198 [relevant: fs/app0], 18.5195 [relevant: move].
+
+### 18.5201 M1747 VERSION v0.1.23 (a leftover empty folder blocked the folder change: nothing was moved)
+
+The author picked D:\app\p5d and pressed 更改文件夾: nothing moved. The new diagnostics (launcher-move.log) said:
+  change: picked="D:\app\p5d" current="C:\...\library"
+  decide: target_empty=0 old_has=1
+The picked folder was not a library: it held only an empty decrypted/ directory left behind by an earlier failed
+move. dir_has_entries() saw a non-empty folder and the code took the 'already populated folder is used as it is'
+path -- the preference switched to it without moving anything. M1747: looks_like_library() = decrypted/ AND
+firmware/; a non-library target has its empty subdirectories pruned (prune_empty_dirs) before the decision, so
+leftovers no longer block a move; a folder that has real unrelated files and is not a library now shows an explicit
+error and switches nothing. Decision lines are logged to launcher-move.log.
+Payload v0.1.23-p5d-5dee6a9+9f13fd7a140d (300,801,749 B, SHA256 D572FA704BCEA05D5A5FC73C4AD4331AF4F65B34C1C49CB15531D123E95ABFBB).
+ANTI-FORGETTING: keywords M1747 change folder moves nothing, leftover empty decrypted dir counted as library,
+looks_like_library, prune_empty_dirs. Files: launcher/hub.cpp switch_game_folder/change_game_folder, launcher-move.log.
+LOOKUP: 18.5201 = M1747 (v0.1.23) -> 18.5200 [relevant: move abort], 18.5199 [relevant: folder switching], 18.5195 [relevant: move].
