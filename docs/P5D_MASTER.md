@@ -523997,3 +523997,17 @@ Payload v0.1.14-p5d-9bff396+9f13fd7a140d (300,796,294 B, SHA256 67097329F3914648
 ANTI-FORGETTING: keywords M1736 move library when changing folder, saves inside library, copy_tree, no <filesystem>
 (win32_compat sync macro). Files: launcher/hub.cpp change_game_folder/game_folder_move_poll/copy_tree, p5d_ui section 3.
 LOOKUP: 18.5193 = M1736 (v0.1.14) -> 18.5192 [relevant: build path fix], 18.5189 [relevant: the folder setting].
+
+### 18.5194 M1737 VERSION v0.1.15 (changing the folder MOVES the library, no second copy)
+
+The author did not want the doubled disk use of the copy-on-change from M1736, and asked for a move instead.
+change_game_folder() now calls move_library(): same volume -> rmdir the empty target and MoveFileW, an instant rename;
+across volumes (or when the rename is refused) -> copy_tree(), and the source is removed only after a complete copy;
+a failed copy removes the partial target and keeps the source as the library. The section text says the library is
+moved (saves included) and that the old location is not kept, so the player makes a backup first if wanted.
+Tested standalone with the same functions: rename branch (old gone, files present) and copy-then-delete branch
+(destination already populated, old gone, files present) both pass.
+Payload v0.1.15-p5d-bd247f2+9f13fd7a140d (300,796,705 B, SHA256 6F95CBB5A83FF6C01999EA3696DB1FB5597B123590C1151474D7586A82002155).
+ANTI-FORGETTING: keywords M1737 move library, MoveFileW rename, cross-volume copy then delete, no second copy.
+Files: launcher/hub.cpp move_library/delete_tree/change_game_folder. Do not go back to copy-only.
+LOOKUP: 18.5194 = M1737 (v0.1.15) -> 18.5193 [relevant: the copy version it replaces], 18.5192 [relevant: build path].

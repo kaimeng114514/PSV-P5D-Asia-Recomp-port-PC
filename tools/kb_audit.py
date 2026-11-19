@@ -17,6 +17,7 @@ SELF = __file__
 
 # anchor table: (section id, short keywords). Keep newest entries first; append new milestones at the top.
 ANCHORS = [
+    ("18.5194", "M1737 v0.1.15: changing to an empty folder MOVES the library (same volume: rename; cross volume: copy then delete source), no doubled disk use. Payload v0.1.15-p5d-bd247f2+9f13fd7a140d."),
     ("18.5193", "M1736 v0.1.14: changing the game folder to an empty folder copies the existing library (saves included) there in the background and switches after the copy; old folder kept as backup. Manual move also works. Payload v0.1.14-p5d-9bff396+9f13fd7a140d."),
     ("18.5192", "M1735 v0.1.13: a rebuild after changing the folder uses the new folder -- steps now get ATIV_DUMP explicitly (env.empty() made the child inherit the startup environment). Payload v0.1.13-p5d-b4a08fa+9f13fd7a140d."),
     ("18.5191", "M1734 v0.1.12: the section is 遊戲構建後存放位置 (the whole game after building), shows the built game folder <library>/decrypted/PCSH10109/recomp and a button to open it. Payload v0.1.12-p5d-c31f7f1+9f13fd7a140d."),
