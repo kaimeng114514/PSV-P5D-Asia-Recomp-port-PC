@@ -524183,3 +524183,25 @@ nude skin-toned body attached to the head, in the costume preview and the watch 
 C:/dev/tmp/P5D_Morph2 (build), C:/dev/tmp/_morph4.py/_textureonly.py (generator).
 ANTI-FORGETTING: keywords M1771 nude swimsuit texture-only, native rig, RECOMP_UI_CMD, COLLECTION costume list.
 LOOKUP: 18.5205 = M1771 -> 18.5204 [relevant: bind-frame investigation], 18.5203 [relevant: MOD page], 18.5181 [relevant: MOD system].
+
+### 18.5206 M1775 v0.3.1 P5D nude swimsuit MOD v8.0 (P5R nude body ported through the GFS Blender add-on)
+
+DELIVERY: Downloads/P5D_Nude_Females v8.0 replaces dance/player/p5/pc204|206|207|208_07.GMD with the P5R nude body
+mesh (C0004/6/7/8_001_00.GMD) rigged to the P5D skeleton and textured with the P5R nude diffuse.
+PIPELINE (the one that finally works): (1) import the P5R GMD with BlenderToolsForGFS into Blender - this makes the
+add-on own the UV convention end-to-end (importing the mesh as OBJ flips V: v_exported = 1-v_original, which showed
+the texture in the wrong place); (2) clear the P5R model's own vertex groups; (3) import the vanilla P5D costume
+(pc20X_01.GMD) and join its meshes to get a weight source; (4) Data Transfer modifier VGROUP_WEIGHTS/POLYINTERP_NEAREST
+from the joined P5D meshes onto the nude mesh, then vertex_group_limit_total(4)+normalize; (5) delete the P5D meshes,
+assign material body_mt, parent to the P5D armature; (6) export GFS at 0x01105090 (the addon writes a dedicated bone
+node for the mesh, which is harmless); (7) post-process: replace the exported texture entry with the P5R nude diffuse
+converted to 512x512 DXT1 (bc1_decode/box_down/bc1_encode) keeping the exported texture name. Notes: the exporter
+requires <=4 influences per vertex and rejects/ignores vertex groups that do not correspond to armature bones; the
+engine shows the body untextured when the material/texture pairing does not match the costume template, and the
+checkerboard/gradient/8x8-grid test textures were used to prove material+UV sampling before switching back to the
+nude diffuse. IN-GAME VERIFICATION: COLLECTION preview and watch/dance mode show a nude, textured body for Ann and
+Makoto (nipple/genital shading correctly placed); the same build was produced for Haru and Futaba.
+FILES: C:/dev/tmp/bl_final.py (Blender build), C:/dev/tmp/_final8.py (texture pack + Mod.xml), delivery folder above.
+ANTI-FORGETTING: keywords M1775 P5R nude body port, BlenderToolsForGFS import (not OBJ), Data Transfer weights,
+exporter V flip, checkerboard texture sampling test, v8.0 delivery.
+LOOKUP: 18.5206 = M1775 -> 18.5205 [relevant: v3 skin-only], 18.5203 [relevant: MOD page], 18.5181 [relevant: MOD system].
