@@ -45,7 +45,7 @@
 
   *示例：社区 MOD「Last Surprise Swimwear」by **Haalyle**（来源：<https://gamebanana.com/mods/323588>）——本仓库/发布包**不附带**该 MOD，玩家下载后可在启动器「MOD」页自行导入并启用。*
 
-  | 自制 MOD 實機效果：P5D 女角色裸體模組（杏／真／春／雙葉 · 泳裝替換） |
+  | 移植者凯梦自制 MOD 實機效果：P5D 女角色裸體模組（杏／真／春／雙葉 · 泳裝替換） |
   |---|
   | ![P5D 女角色裸體模組實機截圖](docs/screenshots/mod_nude_females.png) |
 
