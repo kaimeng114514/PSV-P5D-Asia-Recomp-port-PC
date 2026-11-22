@@ -1728,7 +1728,10 @@ static int p5d_key_event(SDL_Keycode k, int dn) {
 		if (dn && (k == SDLK_LALT || k == SDLK_RALT)) { menu_tap(SELECT); fprintf(stderr, "[WATCH] Alt -> SELECT (reset)\n"); return 1; }
 	}
 	p5d_watch_raw_skip:
-	if (!dn && k == SDLK_RETURN && p5d_collection_active()) { extern int p5d_watch_enter_up_clear(void); p5d_watch_enter_up_clear(); }
+	/* M1776: the Enter latch is cleared by EVERY Return release, not only one inside the flow: using the pad
+	 * between two gallery visits used to leave the latch set (the release arrived when the collection job was not
+	 * "active"), and the next Enter press was then ignored -- the watch mode looked dead after switching devices. */
+	if (!dn && k == SDLK_RETURN) { extern int p5d_watch_enter_up_clear(void); p5d_watch_enter_up_clear(); }
 	if (dn && p5d_collection_active()) {
 		int viewer = p5d_collection_depth >= 3;
 		if (viewer && k == SDLK_RETURN) {
@@ -3051,7 +3054,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 				for (int i = 0; i < 0x100; i += 4) { uint32_t v = RD32(0x812FB280u + (uint32_t)i); if (v >= 0x81000000u && v < 0x81a00000u) fprintf(stderr, " +%02x=%#x", i, v); }
 				fprintf(stderr, "\n"); } } }
 	  { int cf = p5d_collection_active();
-		if (!cf) { p5d_collection_depth = 0; p5d_collection_watching = 0; }
+		if (!cf) { p5d_collection_depth = 0; p5d_collection_watching = 0; p5d_watch_enter_held = 0; }
 		else if (p5d_collection_depth == 0) p5d_collection_depth = 1;
 		{ extern void gfx_hintglyph_refresh(void); static int last_viewer = -1, last_watch = -1;
 		  int vw = window_in_collection_costume(), wt = window_in_collection_watching();
@@ -3555,6 +3558,21 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 				kbm_auto = 0; snprintf(kbm_why, sizeof kbm_why, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? "pad button %d" : "pad axis %d", e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e.gbutton.button : e.gaxis.axis);
 			}   /* the pad in hand: auto's choice */
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) motion_recenter();   /* R3 (the Vita has no stick clicks): the gyro's heading becomes straight ahead */
+			/* M1776: mixed input -- the pad's own confirm/back walk the COLLECTION depth exactly like the keyboard's
+			 * Enter and Backspace, so a player who drives the gallery with the pad and then switches to the keyboard
+			 * does not leave p5d_collection_depth behind at 1 (Enter then only stepped one page deeper instead of
+			 * entering the costume screen's watch mode -- reported: pad first, then Enter did nothing). */
+			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && p5d_collection_active()) {
+				if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) {          /* Cross: confirm, one page deeper */
+					if (!p5d_collection_watching && p5d_collection_depth < 3) p5d_collection_depth++;
+				} else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {    /* Circle: back, one page up */
+					p5d_collection_note_back();
+				} else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START && p5d_collection_depth >= 3) {
+					/* the pad opened/closed the watch mode itself (the game got START); keep our flag in step so the
+					 * next keyboard Enter toggles from the right state instead of re-sending START once more */
+					p5d_collection_watching = !p5d_collection_watching;
+				}
+			}
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
 				int dn = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN, b = e.gbutton.button;
 				if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
