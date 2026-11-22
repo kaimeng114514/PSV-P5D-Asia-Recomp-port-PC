@@ -131,6 +131,27 @@ def stage(staging):
     # new generated header never added to git (runtime/ui/banner_art.h, M1636) made every player's build fail with
     # "banner_art.h: No such file or directory" while the dev tree built fine. Check the sources the shipped (minimal) build
     # compiles, resolving each include against the including file's directory. Fail the packaging instead of the player.
+    # M1777: the launcher's own pictures and a few generated host sources are deliberately kept OUT of the public
+    # repository (docs/RELEASE_COMPLIANCE.md §7, src/ASSETS_EXCLUDED.txt lists their paths), so `git ls-files` above
+    # cannot carry them. Take them from this working tree -- a build machine restores them from a previous release's
+    # extracted payload (src/ASSETS_EXCLUDED.txt: %LOCALAPPDATA%\P5D-Port\<id>\...). Without this a rebuilt exe ships
+    # a picture-less launcher (reported 2026-11-22: "the launcher lost my background image") and, worse, no
+    # pipeline/p5d_mods_apply.py at all (the MOD page would fail to apply anything).
+    EXTRA_TREES = ("assets/p5d", "assets/brand/png", "third_party/kenney-prompts", "runtime/gfx/shaders")
+    EXTRA_FILES = ("pipeline/p5d_mods_apply.py", "runtime/gfx/nsglyphs.h", "runtime/gfx/xboxglyphs.h",
+                   "runtime/ui/banner_commu.h", "runtime/ui/banner_on.png", "runtime/ui/banner_off.png",
+                   "runtime/ui/dispcapture.c", "runtime/ui/dispcapture.h")
+    for t in EXTRA_TREES:
+        p = os.path.join(ROOT, t)
+        if os.path.isdir(p):
+            n += copy_tree(p, os.path.join(staging, t))
+    for f in EXTRA_FILES:
+        s = os.path.join(ROOT, f)
+        d = os.path.join(staging, f)
+        if os.path.isfile(s) and os.path.abspath(s) != os.path.abspath(d):
+            os.makedirs(os.path.dirname(d), exist_ok=True)
+            shutil.copy2(s, d)
+            n += 1
     import posixpath, re as _re
     staged = set()
     for base, dirs, files in os.walk(staging):
