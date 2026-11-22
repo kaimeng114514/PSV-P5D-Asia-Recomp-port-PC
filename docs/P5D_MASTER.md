@@ -524205,3 +524205,69 @@ FILES: C:/dev/tmp/bl_final.py (Blender build), C:/dev/tmp/_final8.py (texture pa
 ANTI-FORGETTING: keywords M1775 P5R nude body port, BlenderToolsForGFS import (not OBJ), Data Transfer weights,
 exporter V flip, checkerboard texture sampling test, v8.0 delivery.
 LOOKUP: 18.5206 = M1775 -> 18.5205 [relevant: v3 skin-only], 18.5203 [relevant: MOD page], 18.5181 [relevant: MOD system].
+
+### 18.5207 M1776 COLLECTION watch-mode Enter latch (input state)
+
+PROBLEM: after driving the COLLECTION gallery with the pad and switching to the keyboard, the first Enter press did
+nothing (the watch mode looked dead). CAUSE: the Enter anti-repeat latch (p5d_watch_enter_held) was only cleared by a
+Return release while the collection job was "active"; a release that arrived while the flow read inactive left the
+latch set and the next Enter was swallowed. FIX (runtime/ui/window.c): clear the latch on EVERY Return release and
+whenever the collection flow leaves. Deliberately no pad-confirm depth bookkeeping (that fought the job-evidence
+repairs and made the 2026-11-22 build worse - see 18.5209).
+FILES: src/runtime/ui/window.c. IN-GAME VERIFICATION: keyboard Enter toggles the watch mode after any pad visit.
+
+### 18.5208 M1777 release packaging staged the excluded UI pictures
+
+PROBLEM: after rebuilding the launcher, its background image was gone and the MOD page could not apply anything.
+CAUSE: the public repo deliberately keeps the launcher's UI pictures (assets/p5d/*.png, assets/brand/png,
+third_party/kenney-prompts/prompts.png) and some generated host sources out (docs/RELEASE_COMPLIANCE.md section 7,
+src/ASSETS_EXCLUDED.txt), and make_p5d_release.py's stage() copied only git-TRACKED files, so the payload shipped
+without assets/p5d/bg.png, pipeline/p5d_mods_apply.py, runtime/ui/dispcapture.c, runtime/gfx/*glyphs.h,
+runtime/gfx/shaders/vibrance.frag, runtime/ui/banner_commu.h and the F5 banner PNGs. FIX: stage() now copies those
+from the working tree after the tracked pass (ASSETS_EXCLUDED.txt documents recovering them from a previous
+release's extracted payload under %LOCALAPPDATA%/P5D-Port/<id>/). The stray host sources are committed.
+FILES: src/dev/make_p5d_release.py, src/pipeline/p5d_mods_apply.py, runtime/ui/dispcapture.c/h, runtime/ui/banner_commu.h,
+runtime/gfx/nsglyphs.h, runtime/gfx/xboxglyphs.h, runtime/gfx/shaders/vibrance.frag. VERIFICATION: payload contains
+assets/p5d/bg.png; rebuilt launcher shows its background and the MOD page applies.
+
+### 18.5209 M1778 pad START syncs the COLLECTION watch flag
+
+PROBLEM: in the character viewer, switching pad <-> keyboard scrambled the key mapping and the on-screen keycaps: the
+keyboard's WASD/arrow watch keys did not drive the sticks and the hint tiles showed the menu mapping.
+CAUSE: the port tracks "watching" itself (p5d_collection_watching) to choose the watch keycaps and the keyboard's
+watch key routing, but only the keyboard Enter path updated it; the pad's START is handled by the game itself.
+FIX (window.c): on pad START in the collection flow (depth >= 3) toggle the flag; on pad Circle (back) while watching
+clear it. NO depth bookkeeping from pad confirms (the 2026-11-22 build did that and broke the normal pad navigation).
+FILES: src/runtime/ui/window.c. VERIFICATION: pad opens the watch mode, keyboard WASD/arrows drive the sticks.
+
+### 18.5210 M1779 watch-mode stick override must not eat the pad's sticks
+
+PROBLEM: in the watch mode, switching between pad and keyboard/mouse killed the pad's left/right sticks.
+CAUSE: window_input's watch-mode override (M1526: WASD = left stick, arrows = right stick) rewrote s[0..3] whenever
+p5d_collection_watching was set, without asking which device was in use: with a pad active it overwrote the real stick
+values with the keyboard's zero deflection. FIX: gate the block on window_uses_keyboard() (same rule as the M1658
+event-field block) - the pad's sticks pass through untouched and the keyboard still drives them.
+FILES: src/runtime/ui/window.c (watch stick override in window_input). VERIFICATION: pad sticks move/rotate in watch
+mode; keyboard WASD/arrows work after switching; switching back restores the pad immediately.
+
+### 18.5211 M1780/M1781 any keyboard press switches the UI device before the key is consumed
+
+PROBLEM: with a pad driving the game, pressing a keyboard key changed the controls but the on-screen icons stayed the
+pad's art; in the watch mode a D/arrow press was not even recognised as keyboard use.
+CAUSE: device_keyboard() (which flips last_device_kb and repaints the glyph atlases) was called at the END of
+p5d_key_event or in its watch block; the event loop consumes many keys earlier (Q/E, Esc, Backspace, the
+dance/Return pause tap, F keys) with continue, and the watch-mode key block returns before the end-of-function switch.
+FIX: (M1780) call device_keyboard() at the entry of p5d_key_event; (M1781) call it at the top of the event loop's
+keyboard handling, before every branch that can consume the key. A no-op when the keyboard already drives the UI.
+FILES: src/runtime/ui/window.c. VERIFICATION: in menus, song list, COMMU, settings and the watch mode, any keyboard
+press immediately repaints the keyboard keycaps/icons; touching the pad switches them back.
+
+### 18.5212 M1776-M1781 input/device-switch session verification and delivery
+
+DELIVERY: desktop P5D Windows移植版启动器.exe rebuilt from the full dev tree C:/dev/nativ_src (NOT the trimmed public
+mirror, whose v0.1.1 sources lost features) with payload stamp v0.2.1-p5d-23c55c3+de7431be1dd3 (300,805,192 B).
+IN-GAME VERIFICATION (user, 2026-11-22): gallery "很好，现在没有问题了" - pad/keyboard/mouse switching keeps the key
+mapping and icons consistent, the pad sticks survive the watch mode and Enter toggles it.
+FILES: C:/dev/nativ_src/runtime/ui/window.c (M1778-M1781), backup exes removed from the desktop.
+ANTI-FORGETTING: keywords M1776/M1777/M1778/M1779/M1780/M1781 device switch, glyph repaint, watch-mode sticks, pad START.
+LOOKUP: 18.5212 = M1776-M1781 -> 18.5211 [glyph device switch], 18.5210 [sticks], 18.5209 [watch flag], 18.5208 [packaging], 18.5207 [Enter latch].

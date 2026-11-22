@@ -1709,6 +1709,12 @@ static void device_keyboard(void) { if (!last_device_kb) { last_device_kb = 1; g
 static void device_gamepad(void) { if (last_device_kb) { last_device_kb = 0; gfx_keyglyph_refresh(); gfx_hintglyph_refresh(); } }
 static int p5d_key_event(SDL_Keycode k, int dn) {
 	int hit = 0, menu_key = 0;
+	/* M1780: any keyboard press hands the UI back to the keyboard at once. The COLLECTION watch-mode block below
+	 * returns before the generic device switch at the end of this function, so pressing D / an arrow key in a
+	 * pad-opened watch mode never switched the glyphs and the key mapping back to the keyboard (the keys did nothing
+	 * visible and the bottom-right icons stayed the pad's -- reported 2026-11-22). Cheap: a no-op when the keyboard
+	 * already drives the UI. */
+	if (dn) device_keyboard();
 	/* M1524: the COLLECTION garment screen's own keys, by code-level flow depth (not the picture): Enter = START
 	 * (watch mode), Ctrl = TRIANGLE (random outfit). Everywhere else these keys keep their normal meaning. */
 	{ static int raw_env = -1; if (raw_env < 0) { const char *e = getenv("RECOMP_WATCH_RAW"); raw_env = e && atoi(e) != 0; }
@@ -2532,7 +2538,12 @@ void window_input(uint32_t *b, uint8_t s[4]) {
 	if (tilt_section && (kbm_on || !pad_gyro)) s[0] = 128;   /* a tilt section: left/right is the tilt (A / D, a gyro-less pad's stick), not a step or a steer */
 	{ static int raw_env2 = -1; if (raw_env2 < 0) { const char *e = getenv("RECOMP_WATCH_RAW"); raw_env2 = e && atoi(e) != 0; }
 	  if (raw_env2) return; }
-	if (p5d_collection_active() && p5d_collection_watching) {
+	/* M1779: only while the KEYBOARD/MOUSE is the UI device -- a pad's own sticks must not be overwritten. The watch-mode
+	 * stick override used to run whatever device was last used: after a pad opened the watch mode (or after switching back
+	 * to the pad in it) the pad's sticks were replaced by the keyboard's zero deflection, so the left/right sticks looked
+	 * dead (reported 2026-11-22: "switching keyboard/mouse/pad in the viewing mode kills the pad sticks"). Same rule as
+	 * the event-field block above (M1658). */
+	if (p5d_collection_active() && p5d_collection_watching && window_uses_keyboard()) {
 		/* WASD = the left stick (move), the arrow keys = the right stick (rotate); 128 is the centre, 0 up/left, 255 down/right.
 		 * The key state is polled from SDL directly: the watch screen's key events are not guaranteed to reach our
 		 * handler (the game's own handlers consume some), the polled state always describes what is really held. */
@@ -3361,6 +3372,12 @@ void window_run(void *(*fn)(void *), void *arg) {
 			 * the input to keyboard + mouse */
 			if (e.type == SDL_EVENT_FINGER_DOWN || e.type == SDL_EVENT_FINGER_MOTION || e.type == SDL_EVENT_FINGER_UP || e.type == SDL_EVENT_FINGER_CANCELED) { screen_finger(&e); continue; }
 			if ((e.type == SDL_EVENT_MOUSE_MOTION && e.motion.which == SDL_TOUCH_MOUSEID) || ((e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) && e.button.which == SDL_TOUCH_MOUSEID)) continue;
+			/* M1781: EVERY keyboard press hands the UI back to the keyboard, before any branch below consumes the key.
+			 * Several branches (Q/E, Esc, Backspace, the dance/Return pause tap, the F keys) continue or return before
+			 * p5d_key_event's own device switch, so pressing such a key while a pad drove the game changed the controls
+			 * but left the on-screen glyphs on the pad's art (reported 2026-11-22: the icons did not follow the keyboard).
+			 * device_keyboard is a no-op when the keyboard already drives the UI. */
+			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) device_keyboard();
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F12) { extern void gfxcap_request(void); gfxcap_request(); fprintf(stderr, "capture requested (F12)\n"); }
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F11) { p5d_load(); continue; }   /* input.ini: reload the PC key map */
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F3) { p5d_qe_mode_cycle(); continue; }   /* Q/E mapping: auto / L-R / D-pad (works in the minimal build too) */
@@ -3558,19 +3575,20 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 				kbm_auto = 0; snprintf(kbm_why, sizeof kbm_why, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? "pad button %d" : "pad axis %d", e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e.gbutton.button : e.gaxis.axis);
 			}   /* the pad in hand: auto's choice */
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) motion_recenter();   /* R3 (the Vita has no stick clicks): the gyro's heading becomes straight ahead */
-			/* M1776: mixed input -- the pad's own confirm/back walk the COLLECTION depth exactly like the keyboard's
-			 * Enter and Backspace, so a player who drives the gallery with the pad and then switches to the keyboard
-			 * does not leave p5d_collection_depth behind at 1 (Enter then only stepped one page deeper instead of
-			 * entering the costume screen's watch mode -- reported: pad first, then Enter did nothing). */
+			/* M1778: the pad's own START opens/closes the COLLECTION watch mode (the game gets START itself), but our
+			 * running flag was only updated by the keyboard Enter path. After a pad-driven visit the keyboard's WASD/
+			 * arrow watch keys and the on-screen keycaps stayed in the menu mapping while the game really was in the
+			 * watch mode -- switching pad <-> keyboard in the character viewer scrambled the key and glyph mappings
+			 * (reported 2026-11-22). Keep the flag in step here; the pad's back leaves the watch mode the same way (the
+			 * game closes it). Deliberately NO depth bookkeeping here: counting pad confirms fought the job-evidence
+			 * repairs and made the 2026-11-22 build worse. */
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && p5d_collection_active()) {
-				if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) {          /* Cross: confirm, one page deeper */
-					if (!p5d_collection_watching && p5d_collection_depth < 3) p5d_collection_depth++;
-				} else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST) {    /* Circle: back, one page up */
-					p5d_collection_note_back();
-				} else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START && p5d_collection_depth >= 3) {
-					/* the pad opened/closed the watch mode itself (the game got START); keep our flag in step so the
-					 * next keyboard Enter toggles from the right state instead of re-sending START once more */
+				if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START && p5d_collection_depth >= 3) {
 					p5d_collection_watching = !p5d_collection_watching;
+					fprintf(stderr, "[KEY] pad START -> collection watch %s\n", p5d_collection_watching ? "on" : "off");
+				} else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST && p5d_collection_watching) {
+					p5d_collection_watching = 0;
+					fprintf(stderr, "[KEY] pad back -> collection watch off\n");
 				}
 			}
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
