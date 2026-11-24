@@ -524345,3 +524345,22 @@ FILES: src/launcher/hub.cpp, src/dev/build_p5d_launcher.ps1.
 ANTI-FORGETTING: keywords M1782-M1794 launcher, 其他設置, 存檔位置, 撤銷導入, 添加到 Steam 庫, shortcuts.vdf, Steam 封面,
 其他設置 存放位置, v0.2.2-p5d, repo launcher source sync.
 LOOKUP: 18.5219 = M1782-M1794 -> 18.5218 [v0.2.2], 18.5217 [Steam], 18.5216 [lights], 18.5215 [undo], 18.5214 [import].
+### 18.5220 repo release line: full source sync to v0.2.2
+
+STATE BEFORE: the public repo (P5D-PC) was the M1644 source-publication snapshot (v0.1.1 line) plus cherry-picked fixes
+(window.c input M1776-M1781, the release staging M1777, the launcher source M1782-M1794). A normalized comparison (CRLF
+ignored) against the dev tree showed 25 remaining differences: runtime 9 files (build.py, core/io.c, core/metrics.c,
+gfx/display.c, gfx/gfx_gpu.c, gfx/hintglyphs.h, gfx/post.c, gfx/vk_shaders.h, ui/window.c), pipeline/vitarecomp.py,
+packs/PCSH10109/hooks.c + pack.toml, the two dev-only scripts, and the 10 brand icon PNGs that the release red line keeps
+out of the repo (src/ASSETS_EXCLUDED.txt).
+SYNC: all of the runtime/pipeline/packs files were copied from the dev tree, so the repo's sources are now byte-identical
+(CRLF aside) to the dev tree except: docs (curated), assets (excluded by the red line), dev/build_p5d_launcher.ps1 (repo-
+local paths) and dev/p5d_mods_apply.py (a stray duplicate in the dev tree; the canonical copy in pipeline/ matches).
+RELEASE LINE: src/dev/make_p5d_release.py's RELEASE_VERSION becomes v0.2.2-p5d, so a release built from the repo stamps the
+same version as the delivered one (the M1777 EXTRA_TREES/EXTRA_FILES staging that restores the excluded pictures stays).
+VERIFICATION: the repo tree builds the launcher (2,701,693 B, same size as the dev build); vitarecomp.py and
+make_p5d_release.py pass py_compile. A game build from the repo still needs the excluded pictures restored per
+ASSETS_EXCLUDED.txt only for the launcher/release packaging -- the game's own build does not need them.
+FILES: src/runtime/*, src/pipeline/vitarecomp.py, src/packs/PCSH10109/*, src/dev/make_p5d_release.py.
+ANTI-FORGETTING: keywords M1795 repo release line v0.2.2, full source sync, normalized comparison, assets excluded.
+LOOKUP: 18.5220 = M1795 -> 18.5219 [launcher source sync], 18.5218 [v0.2.2], 18.5217 [Steam].

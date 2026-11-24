@@ -586,7 +586,13 @@ def start_game(argv, **kw):   # subprocess.Popen for a game, with Windows' refus
 def tee_run(argv, env, cwd, log_path):
     """the game, its stderr to the terminal and to log_path (2> >(tee log >&2)): its exit status"""
     sys.stdout.flush()
-    with open(log_path, "wb") as log:
+    try:
+        log = open(log_path, "wb")
+    except OSError as e:   # M1741: a locked session.log (a leftover game process, an AV scan) must not stop the game
+        log_path = "%s.%d" % (log_path, os.getpid())
+        print("session.log: %s -- the game's log goes to %s" % (e, log_path))
+        log = open(log_path, "wb")
+    with log:
         p = start_game(argv, env=env, cwd=cwd, stderr=subprocess.PIPE)
         def pump():
             err = getattr(sys.stderr, "buffer", None)
@@ -600,8 +606,32 @@ def tee_run(argv, env, cwd, log_path):
     return rc
 
 
+def ensure_fs_link(g):
+    """the run tree's fs/app0 junction (the game's decrypted files, link_dir in cmd_import). A library that was moved
+    keeps the decrypted files but can lose this link: re-point (or create) it so fs/app0/data/*.cpk resolve again."""
+    W, OUT = g.W, g.OUT
+    src = os.path.join(W, "app0_patched") if os.path.isdir(os.path.join(W, "app0_patched")) else os.path.join(W, "app0")
+    if not os.path.isdir(src): return
+    link = os.path.join(OUT, "fs", "app0")
+    want = os.path.realpath(src)
+    have = os.path.realpath(link) if os.path.lexists(link) else ""
+    if have and os.path.normcase(have) == os.path.normcase(want): return
+    if os.path.lexists(link):
+        if os.path.isdir(link) and not os.path.islink(link) and not _is_junction(link):
+            shutil.rmtree(link, ignore_errors=True)   # a copied-through copy (no big data in it after a link-less move)
+        else:
+            try:
+                os.unlink(link) if os.path.islink(link) else os.rmdir(link)
+            except OSError:
+                shutil.rmtree(link, ignore_errors=True)
+    os.makedirs(os.path.join(OUT, "fs"), exist_ok=True)
+    link_dir(want, link)
+    print("fs/app0: re-pointed to %s" % want)
+
+
 def cmd_run(g, frames):
     OUT = g.OUT
+    ensure_fs_link(g)   # M1742: a moved library keeps its files but may lose the fs/app0 junction
     os.makedirs(os.path.join(OUT, "captures"), exist_ok=True)   # F12 in the window saves captures here
     # RUN_ENV: the game's play settings (correctness fixes it needs); TEST_ENV is the gate's and pins the software renderer -- applying it here ran every manual play on the interpreter
     # session.log: this session's stderr (the terminal still shows it; the one before is session.prev.log), with the hitch
@@ -620,7 +650,10 @@ def cmd_run(g, frames):
         rc = subprocess.run(ENV["ATIV_PRE_LAUNCH"], shell=True).returncode
         if rc: sys.exit(rc)
     try:
-        if os.path.isfile(os.path.join(OUT, "session.log")): os.replace(os.path.join(OUT, "session.log"), os.path.join(OUT, "session.prev.log"))
+        try:
+            if os.path.isfile(os.path.join(OUT, "session.log")): os.replace(os.path.join(OUT, "session.log"), os.path.join(OUT, "session.prev.log"))
+        except OSError as e:   # M1741: a locked session.log (a leftover game process, AV scan) must not stop the launch
+            print("session.log: could not move the last one aside (%s) -- starting anyway" % e)
         e = game_env(g, g.RUN_ENV.split() + (ENV.get("EXTRA_ENV") or "").split(), fixed)
         rc = tee_run(g.exe_argv(os.path.join(OUT, g.host())) + [g.BASE + ".img", g.entry(), frames or "100000000000"], e, OUT, os.path.join(OUT, "session.log"))
     finally:

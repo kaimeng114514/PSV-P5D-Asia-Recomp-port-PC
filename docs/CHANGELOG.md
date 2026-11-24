@@ -5,6 +5,24 @@
 
 ---
 
+## M1795 · 2026-11-24 · 仓库源码对齐到 v0.2.2（发布线更新）
+
+**内容**：公开仓库此前是 v0.1.1 的源码快照 + 精选修复；本次把发布线整体更新到开发树的 v0.2.2 状态：
+
+- `src/runtime/`：build.py、core/io.c、core/metrics.c、gfx/display.c、gfx/gfx_gpu.c、gfx/hintglyphs.h、gfx/post.c、gfx/vk_shaders.h、ui/window.c（含帧率显示、画质增强、字形重绘、输入修复等 v0.2.x 改动）；
+- `src/pipeline/vitarecomp.py`；
+- `src/packs/PCSH10109/hooks.c` 与 `pack.toml`（v0.2.x 的 hook/版本表）；
+- `src/dev/make_p5d_release.py` 的发行版本号：`v0.2.2-p5d`；
+- `src/launcher/hub.cpp` 保持上一提交的当前启动器源码。
+
+**仍然有意不同**：
+- 按发布红线（`src/ASSETS_EXCLUDED.txt`、`docs/RELEASE_COMPLIANCE.md`），图片/游戏资源不入库——从仓库构建启动器前需按该文件从发布版 payload 恢复排除的图片；
+- `src/dev/build_p5d_launcher.ps1` 是仓库本地路径的构建脚本（开发树版路径不同）。
+
+**验证**：仓库树可成功编译启动器（2,701,693 B）；`vitarecomp.py`、`make_p5d_release.py` 通过 `py_compile`。
+
+---
+
 ## M1794 · 2026-11-24 · 遊戲存放位置搬到「其他設置」，且構建後才能更改
 
 **现象**：更改游戏库位置的选项原本在主頁 ③，未构建时也能点（会把空库挪来挪去）。

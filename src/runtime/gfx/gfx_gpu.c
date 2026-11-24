@@ -29,6 +29,8 @@
 #include "usse.h"
 #include "usse_spirv.h"
 #include "guestwatch.h"
+
+static void vu_dump_one(const void *vu, int n);   /* M1761 */
 #include "metrics.h"
 #include "settings.h"
 #include "ssao.h"
@@ -1219,6 +1221,7 @@ static uint32_t n_tex_uploads, n_tex_bc;   /* this frame's texture uploads, and 
 static uint8_t *tring_begin(uint32_t bytes, uint32_t *off); static void tring_end(SDL_GPUCommandBuffer *cmd, uint32_t lo, uint32_t hi); static SDL_GPUTransferBuffer *tring_map_buffer(void);   /* (the staging ring, below) */
 static int texdump_multi(uint32_t addr, char *pathbuf, size_t n);
 static const char *texdump_path(uint32_t addr);
+static uint64_t g_bc_blocks_us, g_bc_submit_us;   /* M1678: the last BC upload's copy/submit times (upload_texture's [TEXBREAK] line) */
 static int upload_texture_bc(TexEntry *e, const GfxTexture *t, int cube, int levels, int layers) {
 	size_t total = 0; uint32_t bsz = (t->format >> 24) == 0x85 || (t->format >> 24) == 0x88 ? 8 : 16;   /* UBC1/UBC4: 8-byte blocks */
 	GfxTexture lv[16 * 6]; int n = 0;
@@ -1238,8 +1241,11 @@ static int upload_texture_bc(TexEntry *e, const GfxTexture *t, int cube, int lev
 		if (!(map = SDL_MapGPUTransferBuffer(gpu(), xb, false))) { SDL_ReleaseGPUTransferBuffer(gpu(), xb); return 0; }
 		src_buf = xb;
 	}
+	uint64_t b0 = us_now();
 	for (int i = 0; i < n; i++) gfx_texture_blocks(&lv[i], map + base + off[i]);
 	if (xb) SDL_UnmapGPUTransferBuffer(gpu(), xb);
+	g_bc_blocks_us = us_now() - b0;
+	uint64_t s0 = us_now();
 	SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
 	for (int i = 0; i < n; i++) {
 		int l = i / layers, f = i % layers;
@@ -1250,6 +1256,7 @@ static int upload_texture_bc(TexEntry *e, const GfxTexture *t, int cube, int lev
 	SDL_EndGPUCopyPass(cp);
 	if (xb) { SDL_SubmitGPUCommandBuffer(cmd); SDL_ReleaseGPUTransferBuffer(gpu(), xb); }
 	else tring_end(cmd, base, base + (uint32_t)total);
+	g_bc_submit_us = us_now() - s0;
 	{	/* RECOMP_TEX_DUMP_ALL: the same small-texture dump for textures that go up as BC blocks (the
 	     * dance-stage button icons are BC); the frame range and size filter are the envs added above */
 		static const char *da = 0; static int di = 0, dn = 0;
@@ -1351,13 +1358,119 @@ static int skip_tex_draw(const GfxDraw *d) {
 #include "keyglyphs.h"
 #include "keyglyphs512.h"
 #include "hintglyphs.h"
+#include "xboxglyphs.h"
 static int keyglyph_enabled(void);
 extern int window_uses_keyboard(void);
 extern int window_in_dance_stage(void);
 extern int window_in_config_screen(void);   /* the CONFIG/settings map is active: the START badge is an ALT keycap there */
 extern int window_in_collection_costume(void);   /* the COLLECTION character costume screen: START -> Enter keycap, Triangle -> Ctrl keycap */
 extern int window_in_collection_watching(void);   /* the costume screen's watch mode: zoom -> mouse wheel, reset -> Alt keycap */
+extern int window_in_event_field(void);   /* the COMMU event-field room: its START badge hint is the Esc keycap */
+extern int window_pad_is_ps(void);   /* M1660: a PS4/PS5 pad keeps the game's own PS glyphs (no Xbox repaint) */
+extern int window_pad_is_ns(void);   /* M1661: a Nintendo Switch pad gets the NS face badges (other cells: the game's PS art) */
 static uint32_t kg_addr, kg_span;
+/* ---- M1656: Xbox pad glyphs --------------------------------------------------------------
+ * The game's own button badges are PS symbols. When a pad drives the game we repaint the same
+ * cells with the Xbox controller's glyphs (A/B/X/Y, d-pad arrows, LB/RB, menu/view, sticks),
+ * cut from P5R PC's BUTTON/BUTTON_XBOX.PAK ("wgb" style: white/colour cut-outs made for dark
+ * UI, premultiplied RGBA in xboxglyphs.h). Keyboard/mouse keeps the existing letters/keycaps.
+ * RECOMP_XBOXGLYPHS=0 disables; RECOMP_XBOXGLYPH_LOG=1 logs the patches. */
+static int xboxglyph_enabled(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_XBOXGLYPHS"); v = e ? atoi(e) != 0 : 1; } return v; }
+/* the pad (Xbox) UI: the pad drives the game, or RECOMP_PAD_UI_PREVIEW=1 (dev: look at the Xbox glyphs without a pad) */
+#include "nsglyphs.h"
+/* M1661: paint one NS glyph (premultiplied RGBA, NG_SIZE) into a cell, bilinear, clear 1=black 2=transparent */
+static void ng_paint(uint8_t *rgba, int w, int h, int x, int y, int bw, int bh, int gid, int clear) {
+	const unsigned char *g = (gid >= 0 && gid < NG_COUNT) ? ng_glyphs[gid] : 0;
+	if (!g) return;
+	if (clear) for (int yy = 0; yy < bh; yy++) for (int xx = 0; xx < bw; xx++) {
+		uint8_t *q = rgba + 4 * ((size_t)(y + yy) * w + (x + xx));
+		if (clear == 1) { q[0] = q[1] = q[2] = 0; q[3] = 255; } else { q[0] = q[1] = q[2] = 0; q[3] = 0; }
+	}
+	for (int yy = 0; yy < bh; yy++) {
+		float sy = ((float)yy + 0.5f) * NG_SIZE / bh - 0.5f;
+		int y0 = (int)floorf(sy); float fy = sy - y0;
+		int y1 = y0 + 1; if (y0 < 0) { y0 = 0; fy = 0; } if (y1 > NG_SIZE - 1) y1 = NG_SIZE - 1;
+		for (int xx = 0; xx < bw; xx++) {
+			float sx = ((float)xx + 0.5f) * NG_SIZE / bw - 0.5f;
+			int x0 = (int)floorf(sx); float fx = sx - x0;
+			int x1 = x0 + 1; if (x0 < 0) { x0 = 0; fx = 0; } if (x1 > NG_SIZE - 1) x1 = NG_SIZE - 1;
+			float acc[4] = {0, 0, 0, 0};
+			for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++) {
+				float wt = (i ? fx : 1 - fx) * (j ? fy : 1 - fy);
+				const unsigned char *s = g + 4 * ((size_t)(j ? y1 : y0) * NG_SIZE + (i ? x1 : x0));
+				for (int c = 0; c < 4; c++) acc[c] += wt * s[c];
+			}
+			uint8_t *q = rgba + 4 * ((size_t)(y + yy) * w + (x + xx));
+			float a = acc[3] / 255.0f, inv = 1.0f - a;
+			q[0] = (uint8_t)(acc[0] + q[0] * inv); q[1] = (uint8_t)(acc[1] + q[1] * inv);
+			q[2] = (uint8_t)(acc[2] + q[2] * inv); q[3] = (uint8_t)(acc[3] + q[3] * inv);
+		}
+	}
+}
+static int ns_ui_active(void) { return !window_uses_keyboard() && window_pad_is_ns(); }
+static int ns_hint_glyph(const char *name) {
+	if (!strcmp(name, "lclick")) return NG_A;        /* Circle confirm -> A */
+	if (!strcmp(name, "rclick")) return NG_B;        /* Cross back -> B */
+	if (!strcmp(name, "tab") || !strcmp(name, "tab_song")) return NG_Y;   /* Square -> Y (left) */
+	if (!strcmp(name, "ctrl")) return NG_X;          /* Triangle -> X (top) */
+	if (!strcmp(name, "alt") || !strcmp(name, "enter")) return NG_PLUS;   /* START -> + */
+	if (!strcmp(name, "watch_alt")) return NG_MINUS; /* SELECT -> - */
+	return -1;   /* the d-pad, L/R, the sticks: the game's own PS art (the author's choice) */
+}
+static int xbox_ui_active(void) {
+	static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_PAD_UI_PREVIEW"); v = e && atoi(e) != 0; }
+	if (v) return 1;   /* dev preview */
+	/* only an Xbox pad repaints the Xbox art; a PS pad keeps the game's own PS glyphs and a Switch pad gets the NS badges
+	 * (M1661: without this the Switch pad fell into the Xbox branch and showed the Xbox layout) */
+	return !window_uses_keyboard() && !window_pad_is_ps() && !window_pad_is_ns();
+}
+static void xg_paint(uint8_t *rgba, int w, int h, int x, int y, int bw, int bh, int gid, int clear) {
+	if (gid < 0 || gid >= XG_COUNT || bw <= 0 || bh <= 0) return;
+	/* clear 1: the game's badge interior is black; 2: the HUD icon area has no badge (transparent) */
+	if (clear) for (int yy = 0; yy < bh; yy++) for (int xx = 0; xx < bw; xx++) {
+		int px = x + xx, py = y + yy; if (px < 0 || py < 0 || px >= w || py >= h) continue;
+		uint8_t *q = rgba + 4 * ((size_t)py * w + px);
+		if (clear == 1) { q[0] = q[1] = q[2] = 0; q[3] = 255; } else { q[0] = q[1] = q[2] = q[3] = 0; }
+	}
+	const unsigned char *src = xg_glyphs[gid];
+	for (int yy = 0; yy < bh; yy++) for (int xx = 0; xx < bw; xx++) {
+		int px = x + xx, py = y + yy; if (px < 0 || py < 0 || px >= w || py >= h) continue;
+		float fx = (xx + 0.5f) * XG_SIZE / bw - 0.5f, fy = (yy + 0.5f) * XG_SIZE / bh - 0.5f;
+		int x0 = (int)fx, y0 = (int)fy; float tx = fx - x0, ty = fy - y0;
+		if (x0 < 0) { x0 = 0; tx = 0; } if (y0 < 0) { y0 = 0; ty = 0; }
+		if (x0 > XG_SIZE - 2) { x0 = XG_SIZE - 2; tx = 1; } if (y0 > XG_SIZE - 2) { y0 = XG_SIZE - 2; ty = 1; }
+		const unsigned char *p00 = src + 4 * ((size_t)y0 * XG_SIZE + x0), *p10 = p00 + 4, *p01 = p00 + 4 * XG_SIZE, *p11 = p01 + 4;
+		float r = 0, g = 0, b = 0, a = 0;
+		float w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty), w01 = (1 - tx) * ty, w11 = tx * ty;
+		r = p00[0]*w00 + p10[0]*w10 + p01[0]*w01 + p11[0]*w11;
+		g = p00[1]*w00 + p10[1]*w10 + p01[1]*w01 + p11[1]*w11;
+		b = p00[2]*w00 + p10[2]*w10 + p01[2]*w01 + p11[2]*w11;
+		a = p00[3]*w00 + p10[3]*w10 + p01[3]*w01 + p11[3]*w11;
+		uint8_t *q = rgba + 4 * ((size_t)py * w + px);
+		float inv = 1.0f - a / 255.0f;
+		q[0] = (uint8_t)(r + q[0] * inv); q[1] = (uint8_t)(g + q[1] * inv); q[2] = (uint8_t)(b + q[2] * inv); q[3] = (uint8_t)(a + q[3] * inv);
+	}
+}
+static int xbox_hint_glyph(const char *name) {
+	/* M1656d: outside the dance stage the face buttons use the octagon-badge style the author picked (a_b/b_b/x_b/y_b) */
+	if (!strcmp(name, "lclick")) return XG_A_BADGE;  /* Circle badge (confirm) -> A (M1656b: A=confirm) */
+	if (!strcmp(name, "rclick")) return XG_B_BADGE;  /* Cross badge (back) -> B (M1656b: B=back) */
+	if (!strcmp(name, "tab") || !strcmp(name, "tab_song")) return XG_X_BADGE;   /* Square -> X */
+	if (!strcmp(name, "ctrl")) return XG_Y_BADGE;    /* Triangle -> Y */
+	/* M1656c: the d-pad badges keep the game's own PS d-pad art (the port's d-pad arrows fit this UI better than the Xbox
+	 * cross glyph); only the face buttons/LB/RB/start/view are repainted for the pad. */
+	if (!strcmp(name, "wheel") || !strcmp(name, "qe") || !strcmp(name, "qe_song")) return -1;
+	if (!strcmp(name, "l_trig")) return XG_LB;
+	if (!strcmp(name, "r_trig")) return XG_RB;
+	if (!strcmp(name, "alt") || !strcmp(name, "enter")) return XG_START;
+	/* M1656f: the stick icons keep the game's own PS stick art (the author: they look the same anyway); the keyboard mode
+	 * still replaces those cells with the WASD/arrow keycaps. */
+	if (!strcmp(name, "watch_wasd") || !strcmp(name, "watch_arrows")) return -1;
+	if (!strcmp(name, "watch_alt")) return XG_BACK;
+	if (!strcmp(name, "watch_zoom_in")) return XG_LB;
+	if (!strcmp(name, "watch_zoom_out")) return XG_RB;
+	return -1;
+}
 static void textures_invalidate(uint32_t lo, uint32_t hi);
 void gfx_keyglyph_refresh(void) { if (!keyglyph_enabled()) return; if (kg_addr) textures_force_upload(kg_addr, kg_addr + kg_span + 0x2000); }
 static int keyglyph_enabled(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_KEYGLYPHS"); v = e ? atoi(e) != 0 : 1; } return v; }
@@ -1400,7 +1513,30 @@ static void keyglyph_patch(uint8_t *rgba, int w, int h, uint32_t addr, uint32_t 
 	  if (lg && hh == KG512_HASH) fprintf(stderr, "[KG] icon atlas %#x dance=%d kb=%d\n", addr, window_in_dance_stage(), window_uses_keyboard()); }
 	if (hh != KG512_HASH) return;
 	kg_addr = addr; kg_span = span;
-	if (!window_uses_keyboard()) return;   /* letters whenever the keyboard drives the game: the dance play area is on screen for a second or two before the automatic profile switch lands, and the player must see the letters from its first frame (they used to appear only after that switch) */
+	if (xbox_ui_active()) {   /* M1656: a pad drives the game: the six badges get the Xbox glyphs */
+		if (xboxglyph_enabled()) {
+			/* M1656c: the up/left/down arrow badges stay the game's PS d-pad art; the triangle/circle/cross badges become Y/B/A */
+			static const int xg512[6] = { -1, XG_Y, -1, XG_B, -1, XG_A };
+			/* clear 2 = transparent: the dance atlas cells are the bare white PS symbols on transparency, so the cell is
+			 * emptied before the letter goes in (a black fill here showed up as a square behind the letter) */
+			for (int i = 0; i < 6; i++) if (xg512[i] >= 0) xg_paint(rgba, w, h, kg512_box[i][0], kg512_box[i][1], kg512_box[i][2], kg512_box[i][3], xg512[i], 2);
+			{ static int lx = -1; if (lx < 0) { const char *e = getenv("RECOMP_XBOXGLYPH_LOG"); lx = e ? atoi(e) != 0 : 0; }
+			  if (lx) fprintf(stderr, "[XG] dance icon atlas %#x: Xbox glyphs\n", addr); }
+		}
+		return;
+	}
+	if (ns_ui_active()) {   /* M1661: the Switch dance faces: our own X/A/B letters in the icons' style (triangle=X, circle=A, cross=B) */
+		if (xboxglyph_enabled()) {
+			/* the author's scheme 2: white letters with a thin black edge, no colour (the dance icons are white symbols) */
+			static const int ns512[6] = { -1, NG_DX, -1, NG_DA, -1, NG_DB };
+			for (int i = 0; i < 6; i++) if (ns512[i] >= 0) ng_paint(rgba, w, h, kg512_box[i][0], kg512_box[i][1], kg512_box[i][2], kg512_box[i][3], ns512[i], 2);
+		}
+		return;
+	}
+	/* M1660: a PS3/PS4/PS5 pad keeps the game's original PS art -- the keyboard letters below are for the keyboard/mouse mode
+	 * only (without this return the PS pad showed the keyboard letters, i.e. the UI looked unchanged). */
+	if (!window_uses_keyboard()) return;
+	/* letters whenever the keyboard drives the game: the dance play area is on screen for a second or two before the automatic profile switch lands, and the player must see the letters from its first frame (they used to appear only after that switch) */
 	for (int i = 0; i < 6; i++) {
 		int x0 = kg512_box[i][0], y0 = kg512_box[i][1], bw = kg512_box[i][2], bh = kg512_box[i][3];
 		const unsigned char *m = kg512_mask + kg512_off[i];
@@ -1431,6 +1567,24 @@ static void keyglyph_patch(uint8_t *rgba, int w, int h, uint32_t addr, uint32_t 
  * RECOMP_HINTGLYPH_LOG=1 logs each atlas hash and patch. */
 static uint32_t hg_addr[HG_ATLASES], hg_span[HG_ATLASES];
 void gfx_hintglyph_refresh(void) { for (int a = 0; a < HG_ATLASES; a++) if (hg_addr[a]) textures_force_upload(hg_addr[a], hg_addr[a] + hg_span[a] + 0x2000); }
+/* M1656g: after a device switch the glyph atlases may have been re-uploaded at other guest addresses (the dance flow
+ * reloads its UI textures), so force-uploading the addresses recorded by the last patch can miss them and the screen keeps
+ * the previous device's art. Repaint every cached texture of the glyph atlases' own sizes instead; the patch runs again with
+ * whatever device now drives the game. (Patch repainting never lands in guest memory, so nothing else cares.) */
+void gfx_glyph_refresh_all(void) {
+	{ static int lg = -1; if (lg < 0) { const char *e = getenv("RECOMP_GLYPH_LOG"); lg = e && atoi(e) != 0; }
+	  if (lg) { static int n; n = 0; for (int i = 0; i < ntextures; i++) { TexEntry *x = &textures[i]; if (!x->tex) continue;
+	    if ((x->width == 256 && x->height == 128) || (x->width == 512 && x->height == 512) || (x->width == 2048 && x->height == 1024)) n++; }
+	    fprintf(stderr, "[GLYPH] refresh_all: kb=%d ps=%d xbox_ui=%d atlases=%d\n", window_uses_keyboard(), window_pad_is_ps(), xbox_ui_active(), n); } }
+	for (int i = 0; i < ntextures; i++) {
+		TexEntry *x = &textures[i];
+		if (!x->tex) continue;
+		if ((x->width == 256 && x->height == 128) || (x->width == 512 && x->height == 512) ||
+		    (x->width == 2048 && x->height == 1024)) {
+			x->stale = 1; x->full = 1; x->checked_frame = 0; x->force = 1;
+		}
+	}
+}
 static int hintglyph_enabled(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_HINTGLYPHS"); v = e ? atoi(e) != 0 : 1; } return v; }
 static int hintglyph_buttons(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_HINTGLYPHS_BUTTONS"); v = e ? atoi(e) != 0 : 1; } return v; }
 static int hintglyph_log(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_HINTGLYPH_LOG"); v = e ? atoi(e) != 0 : 0; } return v; }
@@ -1603,6 +1757,35 @@ static void hintglyph_patch(uint8_t *rgba, int w, int h, uint32_t addr, uint32_t
 			        (unsigned long long)hh, at->hash);
 		if (hh != at->hash) continue;
 		hg_addr[a] = addr; hg_span[a] = span;
+		{ static int lg = -1; if (lg < 0) { const char *e = getenv("RECOMP_GLYPH_LOG"); lg = e && atoi(e) != 0; }
+		  if (lg) fprintf(stderr, "[GLYPH] hint atlas %#x %dx%d kb=%d ps=%d xbox=%d\n", addr, w, h, window_uses_keyboard(), window_pad_is_ps(), xbox_ui_active()); }
+		if (xbox_ui_active()) {   /* M1656: the pad UI: Xbox glyphs for the mapped cells */
+			if (xboxglyph_enabled()) {
+				int done = 0;
+				for (int i = 0; i < at->n_cells; i++) {
+					const HintGlyph *g = &at->cells[i];
+					int xg = xbox_hint_glyph(g->name);
+					if (xg < 0 || g->x < 0 || g->y < 0 || g->x + g->w > w || g->y + g->h > h) continue;
+					xg_paint(rgba, w, h, g->x, g->y, g->w, g->h, xg, 2);
+					done++;
+				}
+				if (hintglyph_log()) fprintf(stderr, "[HG] xbox patched %s atlas %#x: %d cells\n", at->name, addr, done);
+			}
+			return;
+		}
+		if (ns_ui_active()) {   /* M1661: Switch pad: NS face badges + plus/minus, the rest stays the game's PS art */
+			int done = 0;
+			for (int i = 0; i < at->n_cells; i++) {
+				const HintGlyph *g = &at->cells[i];
+				int ng = ns_hint_glyph(g->name);
+				if (ng < 0 || g->x < 0 || g->y < 0 || g->x + g->w > w || g->y + g->h > h) continue;
+				ng_paint(rgba, w, h, g->x, g->y, g->w, g->h, ng, 2);
+				done++;
+			}
+			if (hintglyph_log()) fprintf(stderr, "[HG] NS patched %s atlas %#x: %d cells\n", at->name, addr, done);
+			return;
+		}
+		/* M1660: a PS pad keeps the game's own PS badges; the keyboard keycaps below are only for the keyboard/mouse mode. */
 		if (!window_uses_keyboard()) return;
 		int done = 0;
 		for (int i = 0; i < at->n_cells; i++) {
@@ -1612,6 +1795,7 @@ static void hintglyph_patch(uint8_t *rgba, int w, int h, uint32_t addr, uint32_t
 			 * detector reads them -- a stale dance/song profile used to hide them and the detector went blind) */
 			if (g->config_only && !window_in_config_screen()) continue;   /* e.g. the START -> ALT keycap: settings only */
 			if (g->config_only && window_in_collection_costume()) continue;   /* ...unless the costume screen shows the START badge (it gets the Enter keycap) */
+			if (g->field_only && !window_in_event_field()) continue;   /* the event-field room's START -> Esc keycap: that room only */
 			if (g->viewer_only && !window_in_collection_costume()) continue;   /* Enter / Ctrl keycaps: the costume screen only */
 			if (g->watch_only && !window_in_collection_watching()) continue;   /* watch-mode tiles: zoom wheel / Alt reset only while the watch mode runs */
 			if (g->x < 0 || g->y < 0 || g->x + g->w > w || g->y + g->h > h) continue;
@@ -1626,8 +1810,22 @@ static void hintglyph_patch(uint8_t *rgba, int w, int h, uint32_t addr, uint32_t
 	}
 }
 static void upload_texture(TexEntry *e, const GfxTexture *t) {
+	if (!e || !t || !gpu()) return;   /* M1662: never walk a half-torn cache or a lost GPU device into SDL */
 	int cube = ((t->u_mode >> 4) & 3) == 3, levels = cube ? gfx_texture_cube_levels(t) : gfx_texture_levels(t), layers = cube ? 6 : 1;
+	uint64_t th0 = us_now(), th_hash = 0, tc_create = 0;   /* M1678: [TEXBREAK] timings */
+	if (levels <= 0 || t->width == 0 || t->height == 0 || levels > 16 || t->width > 16384 || t->height > 16384) {
+		fprintf(stderr, "    gpu: texture %#x %ux%u fmt %#x layout %d: bad size/levels, upload skipped\n", t->data, t->width, t->height, t->format, (t->u_mode >> 4) & 3);
+		return;
+	}
+	{ static int ul = -1; if (ul < 0) ul = getenv("RECOMP_UPLOAD_LOG") != 0;
+	  if (ul) fprintf(stderr, "[UPLOAD] begin %#x %ux%u fmt %#x layout %d cube %d levels %d layers %d span %u\n",
+	                  t->data, t->width, t->height, t->format, (t->u_mode >> 4) & 3, cube, levels, layers, e->span); }
+	if (e->tex && e->levels != levels) {   /* M1662b: the cached GPU texture has another mip count -- recreate it */
+		fprintf(stderr, "    gpu: texture %#x levels %d -> %d: recreating the GPU texture\n", t->data, e->levels, levels);
+		SDL_ReleaseGPUTexture(gpu(), e->tex); e->tex = 0; e->bc = 0;
+	}
 	e->chash = hash_bytes(G(t->data), e->span); e->levels = levels;   /* what the GPU texture holds (~10 us for 256 KB) */
+	th_hash = us_now() - th0;
 	if (keyglyph_enabled() && !kg_addr && t->width == 256 && t->height == 128) { kg_addr = t->data; kg_span = e->span; }   /* the button-glyph atlas (keyglyph_patch checks the content hash) */
 	{	/* RECOMP_TEX_DUMP_ALL=dir: every small texture upload, decoded RGBA8, for any upload path (the
 	     * dance-stage button icons are BC; this hook exists to find their addresses/atlas) */
@@ -1698,13 +1896,19 @@ static void upload_texture(TexEntry *e, const GfxTexture *t) {
 		if (!e->tex) {
 			SDL_GPUTextureCreateInfo tci = { .type = cube ? SDL_GPU_TEXTURETYPE_2D_ARRAY : SDL_GPU_TEXTURETYPE_2D, .format = bc,
 				.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER, .width = t->width, .height = t->height, .layer_count_or_depth = (Uint32)layers, .num_levels = (Uint32)levels, .sample_count = SDL_GPU_SAMPLECOUNT_1 };
-			e->tex = SDL_CreateGPUTexture(gpu(), &tci);
+			{ uint64_t c0 = us_now(); e->tex = SDL_CreateGPUTexture(gpu(), &tci); tc_create = us_now() - c0; }
 			if (!e->tex) fprintf(stderr, "    gpu: BC texture %ux%u fmt %#x layout %d: SDL_CreateGPUTexture failed (%s): decoding it instead\n", t->width, t->height, t->format, e->layout, SDL_GetError());
 			e->bc = e->tex != 0;
 		}
 		if (e->tex) {   /* (a failed upload -- no transfer memory -- leaves it unfilled, as the decode path's would) */
+			uint64_t u0 = us_now();
 			if (upload_texture_bc(e, t, cube, levels, layers)) n_tex_bc++;
 			else fprintf(stderr, "    gpu: BC texture %#x: no transfer buffer (%s)\n", t->data, SDL_GetError());
+			uint64_t u1 = us_now();
+			{ static int tb = -1; if (tb < 0) tb = getenv("RECOMP_P5D_TEXBREAK") != 0;
+			  if (tb) fprintf(stderr, "    [TEXBREAK] %#x %ux%u span=%u hash=%.2f create=%.2f blocks=%.2f submit=%.2f total=%.2f ms\n",
+			                  t->data, t->width, t->height, e->span, th_hash / 1000.0, tc_create / 1000.0,
+			                  g_bc_blocks_us / 1000.0, g_bc_submit_us / 1000.0, (u1 - th0) / 1000.0); }
 			return;
 		}
 	}
@@ -1723,7 +1927,13 @@ decode:
 		t_up_xfer += us_now() - tx0;
 		if (map) {
 			uint64_t tu0 = us_now();
-			SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+			SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = cmd ? SDL_BeginGPUCopyPass(cmd) : 0;
+			if (!cmd || !cp) {   /* M1662: SDL dereferences these without a check (the DLC-costume crash) */
+				fprintf(stderr, "    gpu: texture %#x %ux%u fmt %#x levels %d: no command buffer (%s), upload skipped\n", t->data, t->width, t->height, t->format, levels, SDL_GetError());
+				if (cmd) SDL_CancelGPUCommandBuffer(cmd);
+				tring_end(cmd, base, base + total);
+				return;
+			}
 			t_up_submit += us_now() - tu0;
 			uint32_t off = base;
 			for (int l = 0; l < levels; l++) for (int f = 0; f < layers; f++) {
@@ -1750,6 +1960,9 @@ decode:
 					const char *path = texdump_multi(t->data, dpth, sizeof dpth) ? dpth : 0;
 					if (path && l == 0 && f == 0) { FILE *o = fopen(path + 1, "wb"); if (o) { fwrite(map + off, bpp, (size_t)lv.width * lv.height, o); fclose(o); } }
 				}
+				{ static int ul = -1; if (ul < 0) ul = getenv("RECOMP_UPLOAD_LOG") != 0;
+				  if (ul) fprintf(stderr, "[UPLOAD] staging %#x level %d/%d layer %d/%d %ux%u off %u tex %p tring %p\n",
+				                  t->data, l, levels, f, layers, lv.width, lv.height, off, (void *)e->tex, (void *)tring); }
 				SDL_GPUTextureTransferInfo src = { .transfer_buffer = tring, .offset = off, .pixels_per_row = lv.width, .rows_per_layer = lv.height };
 				SDL_GPUTextureRegion dst = { .texture = e->tex, .mip_level = (Uint32)l, .layer = (Uint32)f, .w = lv.width, .h = lv.height, .d = 1 };
 				SDL_UploadToGPUTexture(cp, &src, &dst, false);
@@ -1768,7 +1981,13 @@ decode:
 	 * command buffer is submitted */
 	SDL_GPUTransferBuffer *xbs[6 * 16]; int nxb = 0;
 	uint64_t tu0 = us_now();
-	SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = SDL_BeginGPUCopyPass(cmd);
+	SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu()); SDL_GPUCopyPass *cp = cmd ? SDL_BeginGPUCopyPass(cmd) : 0;
+	if (!cmd || !cp) {   /* M1662: the DLC-costume crash: SDL_UploadToGPUTexture dereferenced a null pass at +0x4c */
+		fprintf(stderr, "    gpu: texture %#x %ux%u fmt %#x levels %d: no command buffer (%s), upload skipped\n", t->data, t->width, t->height, t->format, levels, SDL_GetError());
+		if (cmd) SDL_CancelGPUCommandBuffer(cmd);
+		free(rgba);
+		return;
+	}
 	t_up_submit += us_now() - tu0;
 	for (int l = 0; l < levels; l++) for (int f = 0; f < layers; f++) {
 		GfxTexture lv; if (cube) gfx_texture_face_level(t, f, l, &lv); else gfx_texture_level(t, l, &lv);
@@ -1799,8 +2018,16 @@ decode:
 		SDL_GPUTransferBuffer *xb = SDL_CreateGPUTransferBuffer(gpu(), &xci);
 		if (!xb || nxb >= 6 * 16) break;
 		xbs[nxb++] = xb;
-		void *map = SDL_MapGPUTransferBuffer(gpu(), xb, false); memcpy(map, rgba, (size_t)bpp * lv.width * lv.height); SDL_UnmapGPUTransferBuffer(gpu(), xb);
+		void *map = SDL_MapGPUTransferBuffer(gpu(), xb, false);
+		if (!map) {
+			fprintf(stderr, "    gpu: texture %#x %ux%u fmt %#x: transfer mapping failed (%s), upload skipped\n", t->data, lv.width, lv.height, t->format, SDL_GetError());
+			SDL_ReleaseGPUTransferBuffer(gpu(), xb); nxb--; break;
+		}
+		memcpy(map, rgba, (size_t)bpp * lv.width * lv.height); SDL_UnmapGPUTransferBuffer(gpu(), xb);
 		t_up_xfer += us_now() - tx0;
+		{ static int ul = -1; if (ul < 0) ul = getenv("RECOMP_UPLOAD_LOG") != 0;
+		  if (ul) fprintf(stderr, "[UPLOAD] buffer %#x level %d/%d layer %d/%d %ux%u tex %p xb %p\n",
+		                  t->data, l, levels, f, layers, lv.width, lv.height, (void *)e->tex, (void *)xb); }
 		SDL_GPUTextureTransferInfo src = { .transfer_buffer = xb, .pixels_per_row = lv.width, .rows_per_layer = lv.height };
 		SDL_GPUTextureRegion dst = { .texture = e->tex, .mip_level = (Uint32)l, .layer = (Uint32)f, .w = lv.width, .h = lv.height, .d = 1 };
 		SDL_UploadToGPUTexture(cp, &src, &dst, false);
@@ -4881,7 +5108,8 @@ static void batch_flush_body(const char *why) {
 					SDL_GPUBuffer *sbufs[2] = { vring, b->wring ? wring : vring };   /* the shader declared 2 when it has LDST windows; a window-less draw of such a program binds the PA buffer twice */
 					SDL_BindGPUVertexStorageBuffers(rp, 0, sbufs, (uint32_t)b->nsbuf);
 				}
-				if (!last || memcmp(&last->vu, &b->vu, sizeof b->vu)) SDL_PushGPUVertexUniformData(cmd, 0, &b->vu, sizeof b->vu);
+				{ static int vu_n; const char *ve = getenv("RECOMP_VU_DUMP"); if (ve && *ve && *ve != '0' && vu_n < 120) vu_dump_one(&b->vu, vu_n++); }
+			if (!last || memcmp(&last->vu, &b->vu, sizeof b->vu)) SDL_PushGPUVertexUniformData(cmd, 0, &b->vu, sizeof b->vu);
 				if (!last || memcmp(&last->fu, &b->fu, sizeof b->fu)) SDL_PushGPUFragmentUniformData(cmd, 0, &b->fu, sizeof b->fu);
 				if (b->ntsb && (!last || last->ntsb != b->ntsb || memcmp(last->tsb, b->tsb, (size_t)b->ntsb * sizeof b->tsb[0]))) SDL_BindGPUFragmentSamplers(rp, 0, b->tsb, (uint32_t)b->ntsb);
 				if (b->nvtsb && (!last || last->nvtsb != b->nvtsb || memcmp(last->vtsb, b->vtsb, (size_t)b->nvtsb * sizeof b->vtsb[0]))) SDL_BindGPUVertexSamplers(rp, 0, b->vtsb, (uint32_t)b->nvtsb);
@@ -5204,6 +5432,41 @@ static uint32_t ldst_window_reuse(uint32_t addr) {
 	}
 	return ~0u;
 }
+/* M1750 (RECOMP_BONE_DUMP=1): print the first floats of a character-sized skinned draw's LDST windows, to learn
+ * what the engine really puts in the bone palette (the P5R->P5D binding-space investigation). */
+static int bone_dump_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_BONE_DUMP"); v = e && *e && *e != '0'; } return v; }
+static int bone_dump_lines;
+static void bone_dump_window(uint64_t draw, uint32_t nidx, int k, uint32_t base, int nwords) {
+	if (!bone_dump_on() || !base || bone_dump_lines >= 400) return;
+	bone_dump_lines++;
+	fprintf(stderr, "[BONE] draw=%llu nidx=%u win=%d addr=%#x words=%d\n", (unsigned long long)draw, nidx, k, base, nwords);
+	for (int q = 0; q < nwords; q += 4) {
+		float f0, f1, f2, f3;
+		memcpy(&f0, G(base + (uint32_t)q * 4), 4); memcpy(&f1, G(base + (uint32_t)(q + 1) * 4), 4);
+		memcpy(&f2, G(base + (uint32_t)(q + 2) * 4), 4); memcpy(&f3, G(base + (uint32_t)(q + 3) * 4), 4);
+		fprintf(stderr, "  %03d: %12.5f %12.5f %12.5f %12.5f\n", q / 4, f0, f1, f2, f3);
+	}
+}
+
+/* M1761: dump the vertex-uniform SA words a batch really pushes, and the memory each plausible SA pointer
+ * addresses (the skinned palette's real home), so the bone-matrix convention can be read instead of guessed. */
+static void vu_dump_one(const void *vu, int n) {
+	char path[160];
+	snprintf(path, sizeof path, "C:/dev/tmp/vu_%03d.bin", n);
+	FILE *f = fopen(path, "wb");
+	if (!f) return;
+	const uint32_t *w = (const uint32_t *)vu;
+	fwrite(w, 1, 1024, f);
+	for (int i = 0; i < 256; i++) {
+		uint32_t a = w[i];
+		if (a < 0x10000u || a > 0x2FFFFFFFu || (a & 3)) continue;
+		uint8_t buf[4096];
+		for (int k = 0; k < 4096; k++) buf[k] = *((const uint8_t *)G(a + (uint32_t)k));
+		fwrite(buf, 1, sizeof buf, f);
+	}
+	fclose(f);
+}
+
 static void ldst_window_placed(uint32_t addr, uint32_t off, uint32_t *dst) {
 	LdstWin *c = 0;
 	for (int i = 0; i < NLDSTWIN && !c; i++) if (ldst_win[i].host && ldst_win[i].addr == addr) c = &ldst_win[i];   /* (the same address's older bytes: replaced) */
@@ -6416,6 +6679,68 @@ void gfx_gpu_draw(const GfxDraw *d) {
 		win_prev[nwin] = (replay_prev_ok && replay_prev && replay_draw_index >= 0 && (uint32_t)replay_draw_index < replay_prev_n)
 		                 ? replay_prev[replay_draw_index].off[k] : UINT32_MAX;
 		win[nwin][0] = b; win[nwin][1] = USSE_LDST_WINDOW; win[nwin][2] = (uint32_t)nwin * (USSE_LDST_WINDOW / 4); win[nwin][3] = 0; nwin++;
+		if (d->count >= 1000) bone_dump_window(n_gpu_draws, d->count, nwin - 1, b, 128);
+	if (d->count >= 30000) {   /* M1776: dump the big skinned draw's vertex streams (guest memory each stream copies from) */
+		static int vsd;
+		const char *vse = getenv("RECOMP_VSTREAM_DUMP");
+		if (vse && *vse && *vse != '0' && !vsd) { vsd = 1;
+			for (int m = 0; m < plan.nst && m < 16; m++) {
+				char path[128]; snprintf(path, sizeof path, "C:/dev/tmp/vs_%%d.bin", m);
+				FILE *vf = fopen(path, "wb");
+				if (vf) { uint32_t nb = plan.st[m].bytes; if (nb > (1u << 22)) nb = 1u << 22;
+					fwrite(G(plan.st[m].src), 1, nb, vf); fclose(vf); }
+			}
+			fprintf(stderr, "[VSTREAM] nst=%%d\n", plan.nst);
+		}
+	}
+	if (d->count >= 30000) {   /* M1774: dump 256 MB of the graphics guest RAM once, from a big skinned draw */
+		static int rd3;
+		const char *e3 = getenv("RECOMP_RAM_DUMP3");
+		if (e3 && *e3 && *e3 != '0' && !rd3) { rd3 = 1;
+			FILE *rf = fopen("C:/dev/tmp/ram2.bin", "wb");
+			if (rf) { int okc = 0;
+				for (int c = 0; c < 32; c++) if (fwrite(G(0x24000000u + (uint32_t)c * 0x400000u), 1, 0x400000u, rf) == 0x400000u) okc++; else break;
+				fflush(rf); long sz = ftell(rf); fclose(rf);
+				fprintf(stderr, "[RAMDUMP3] chunks=%d size=%ld\n", okc, sz); } } }
+	if (d->count >= 30000) {   /* M1760: dump every window of a big skinned draw (our nude body mesh: 43968 indices) */
+		static int w3n;
+		static int ram_done2;
+		{ const char *re2 = getenv("RECOMP_RAM_DUMP2");
+		  if (re2 && *re2 && *re2 != '0' && !ram_done2) { ram_done2 = 1;
+			FILE *rf = fopen("C:/dev/tmp/ram.bin", "wb");
+			if (rf) { int okc = 0;
+				for (int c = 0; c < 64; c++) { if (fwrite(G(0x20000000u + (uint32_t)c * 0x100000u), 1, 0x100000u, rf) == 0x100000u) okc++; else break; }
+				fflush(rf); long sz = ftell(rf); fclose(rf);
+				fprintf(stderr, "[RAMDUMP2] done nidx=%u chunks=%d size=%ld\n", d->count, okc, sz); } } }
+		const char *e3 = getenv("RECOMP_BONE_DUMP3");
+		if (e3 && *e3 && *e3 != '0' && w3n < 32) {
+			char path[160]; snprintf(path, sizeof path, "C:/dev/tmp/w3_%llu_%u_%d.bin", (unsigned long long)n_gpu_draws, d->count, nwin - 1);
+			FILE *wf = fopen(path, "wb");
+			if (wf) { fwrite(G(b), 1, USSE_LDST_WINDOW, wf); fclose(wf); w3n++;
+				fprintf(stderr, "[BONEW3] %s addr=%#x sa=%d nldst=%d\n", path, b, vs->ldst_sa[nwin - 1], vs->nldst); }
+		}
+	}
+	if (d->count >= 1000) {   /* M1752: dump every window of character-sized draws (index count in the name) */
+		static int win_n;
+		const char *e = getenv("RECOMP_BONE_DUMP_WIN");
+		if (e && *e && *e != '0' && win_n < 24) {
+			char path[128]; snprintf(path, sizeof path, "C:/dev/tmp/win_%u_%d.bin", d->count, nwin - 1);
+			FILE *wf = fopen(path, "wb");
+			if (wf) { fwrite(G(b), 1, USSE_LDST_WINDOW, wf); fclose(wf); win_n++;
+				fprintf(stderr, "[BONEWIN] %s draw=%llu nidx=%u addr=%#x\n", path, (unsigned long long)n_gpu_draws, d->count, b); }
+		}
+	}
+	if (d->count >= 1000) {   /* M1751: dump one whole 64 KB LDST window to find where the bone palette sits inside it */
+		static int win_done;
+		if (!win_done) {
+			const char *e = getenv("RECOMP_BONE_DUMP_WIN");
+			if (e && *e && *e != '0') {
+				FILE *wf = fopen("C:/dev/tmp/bone_win.bin", "wb");
+				if (wf) { fwrite(G(b), 1, USSE_LDST_WINDOW, wf); fclose(wf); win_done = 1;
+					fprintf(stderr, "[BONEWIN] wrote 64 KB: draw=%llu nidx=%u addr=%#x\n", (unsigned long long)n_gpu_draws, d->count, b); }
+			}
+		}
+	}
 		if (trace_sync()) fprintf(stderr, "gpu trace: draw %u LDST window %d: SA%d = %#x, first words %#x %#x %#x\n", n_gpu_draws, nwin - 1, vs->ldst_sa[k], b, RD32(b), RD32(b + 4), RD32(b + 8));
 	}
 	if (nwin) {   /* each window into the LDST ring (guest memory as it is now: the batch's copy pass uploads it), or the one already there */
@@ -7159,6 +7484,10 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 		__atomic_store_n(&n_gpu_draws, 0, __ATOMIC_RELAXED); __atomic_store_n(&n_fallback, 0, __ATOMIC_RELAXED); n_fallback_why = 0; n_shader_builds = n_vring_wraps = 0; n_tex_uploads = n_tex_bc = 0; t_total = t_vfetch = t_texhash = t_texup = t_tsync = t_view = t_submit = t_shader = t_pipe = t_bind = t_setup = t_vbuf = t_pass = t_map = t_acq = t_scene_sync = 0;
 	}
 	gpu_frame_no++;   /* textures are re-checked against guest memory from here on */
+	{ const char *re = getenv("RECOMP_RAM_DUMP");   /* M1765: bounded graphics-ram dump, frame-based */
+	  if (re && *re && *re != '0' && gpu_frame_no == 600) {
+		FILE *rf = fopen("C:/dev/tmp/ram.bin", "wb");
+		if (rf) { fwrite(G(0x20000000u), 1, 0x10000000u, rf); fclose(rf); fprintf(stderr, "[RAMDUMP] done frame=%llu\n", (unsigned long long)gpu_frame_no); } } }
 	if (gpu()) recipes_step();
 	if (gpu()) {
 		GfxTarget t = { base, 0, width, height, pitch, 0 };
@@ -7202,6 +7531,7 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 		}
 		extern int window_active(void); extern void window_present_gpu(void *tex, uint32_t w, uint32_t h, int raw);
 		static int no_gpu_present = -1; if (no_gpu_present < 0) no_gpu_present = getenv("RECOMP_GPU_NO_PRESENT") != 0;   /* RECOMP_GPU_NO_PRESENT=1: present through guest memory as before */
+
 		/* an sRGB frame goes to the window as raw texels (a copy, not a blit) where the backend copies between the sRGB and
 		 * plain forms of a format: Vulkan does. Through guest memory instead, Killzone's windowed frames each cost a download
 		 * and a wait for the whole frame, and the window showed the 1x frame at any render scale (2026-10-26) */

@@ -84,8 +84,8 @@ static const char post_msl[] =
 	"}\n";
 
 typedef struct { float rcp[2], origin[2], k[4]; } PostU;
-static SDL_GPUShader *vs, *fs_fxaa, *fs_cas;
-static SDL_GPUGraphicsPipeline *p_fxaa, *p_cas; static SDL_GPUTextureFormat cas_fmt = SDL_GPU_TEXTUREFORMAT_INVALID;
+static SDL_GPUShader *vs, *fs_fxaa, *fs_cas, *fs_vib;
+static SDL_GPUGraphicsPipeline *p_fxaa, *p_cas, *p_vib; static SDL_GPUTextureFormat cas_fmt = SDL_GPU_TEXTUREFORMAT_INVALID;
 static SDL_GPUSampler *smp;
 static SDL_GPUTexture *aa_tex, *out_tex; static uint32_t aa_w, aa_h, aa_l, out_w, out_h;
 static int broken;   /* a creation failed: say so once and fall back to the plain blit for the rest of the run */
@@ -94,8 +94,9 @@ static SDL_GPUShader *shader(SDL_GPUDevice *gpu, const char *entry, SDL_GPUShade
 	SDL_GPUShaderCreateInfo ci = {0};
 	if (SDL_GetGPUShaderFormats(gpu) & SDL_GPU_SHADERFORMAT_MSL) { ci.code = (const Uint8 *)post_msl; ci.code_size = sizeof post_msl; ci.entrypoint = entry; ci.format = SDL_GPU_SHADERFORMAT_MSL; }
 	else {   /* Vulkan: the SPIR-V twins (runtime/gfx/shaders/post.vert, fxaa.frag, cas.frag; vk_shaders.h) */
-		int v = !strcmp(entry, "post_vs"), f = !strcmp(entry, "fxaa_fs");
-		ci.code = (const Uint8 *)(v ? vk_post_vert : f ? vk_fxaa_frag : vk_cas_frag); ci.code_size = v ? sizeof vk_post_vert : f ? sizeof vk_fxaa_frag : sizeof vk_cas_frag;
+		int v = !strcmp(entry, "post_vs"), f = !strcmp(entry, "fxaa_fs"), vb = !strcmp(entry, "vib_fs");
+		ci.code = (const Uint8 *)(v ? vk_post_vert : f ? vk_fxaa_frag : vb ? vk_vibrance_frag : vk_cas_frag);
+		ci.code_size = v ? sizeof vk_post_vert : f ? sizeof vk_fxaa_frag : vb ? sizeof vk_vibrance_frag : sizeof vk_cas_frag;
 		ci.entrypoint = "main"; ci.format = SDL_GPU_SHADERFORMAT_SPIRV;
 	}
 	ci.stage = stage;
@@ -113,7 +114,7 @@ static SDL_GPUGraphicsPipeline *pipeline(SDL_GPUDevice *gpu, SDL_GPUShader *fs, 
 static int setup(SDL_GPUDevice *gpu, SDL_GPUTextureFormat swap_fmt) {
 	if (broken) return 0;
 	if (!vs) {
-		vs = shader(gpu, "post_vs", SDL_GPU_SHADERSTAGE_VERTEX); fs_fxaa = shader(gpu, "fxaa_fs", SDL_GPU_SHADERSTAGE_FRAGMENT); fs_cas = shader(gpu, "cas_fs", SDL_GPU_SHADERSTAGE_FRAGMENT);
+		vs = shader(gpu, "post_vs", SDL_GPU_SHADERSTAGE_VERTEX); fs_fxaa = shader(gpu, "fxaa_fs", SDL_GPU_SHADERSTAGE_FRAGMENT); fs_cas = shader(gpu, "cas_fs", SDL_GPU_SHADERSTAGE_FRAGMENT); fs_vib = shader(gpu, "vib_fs", SDL_GPU_SHADERSTAGE_FRAGMENT);
 		SDL_GPUSamplerCreateInfo sci = {0};
 		sci.min_filter = sci.mag_filter = SDL_GPU_FILTER_LINEAR; sci.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
 		sci.address_mode_u = sci.address_mode_v = sci.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
@@ -123,7 +124,7 @@ static int setup(SDL_GPUDevice *gpu, SDL_GPUTextureFormat swap_fmt) {
 	}
 	if (cas_fmt != swap_fmt) {
 		if (p_cas) SDL_ReleaseGPUGraphicsPipeline(gpu, p_cas);
-		p_cas = pipeline(gpu, fs_cas, swap_fmt); cas_fmt = swap_fmt;
+		p_cas = pipeline(gpu, fs_cas, swap_fmt); p_vib = pipeline(gpu, fs_vib, swap_fmt); cas_fmt = swap_fmt;
 		if (!p_cas) { SDL_Log("post: CAS pipeline unavailable (%s): plain blit", SDL_GetError()); broken = 1; return 0; }
 	}
 	return 1;
@@ -137,13 +138,13 @@ static SDL_GPUTexture *ensure(SDL_GPUDevice *gpu, SDL_GPUTexture **t, uint32_t *
 	return *t;
 }
 static void pass(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *dst, SDL_GPULoadOp load, SDL_GPUGraphicsPipeline *p, SDL_GPUTexture *src,
-                 float vx, float vy, float vw, float vh, float sharp) {
+                 float vx, float vy, float vw, float vh, float sharp, float vib, float strong) {
 	SDL_GPUColorTargetInfo ct = { .texture = dst, .load_op = load, .store_op = SDL_GPU_STOREOP_STORE, .clear_color = { 0, 0, 0, 1 } };
 	SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, NULL);
 	SDL_GPUViewport v = { vx, vy, vw, vh, 0.0f, 1.0f }; SDL_SetGPUViewport(rp, &v);
 	SDL_BindGPUGraphicsPipeline(rp, p);
 	SDL_GPUTextureSamplerBinding b = { .texture = src, .sampler = smp }; SDL_BindGPUFragmentSamplers(rp, 0, &b, 1);
-	PostU u = { { 1.0f / vw, 1.0f / vh }, { vx, vy }, { sharp, 0, 0, 0 } };
+	PostU u = { { 1.0f / vw, 1.0f / vh }, { vx, vy }, { sharp, vib, strong, 0 } };
 	SDL_PushGPUFragmentUniformData(cmd, 0, &u, sizeof u);
 	SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
 	SDL_EndGPURenderPass(rp);
@@ -160,16 +161,31 @@ int post_present(SDL_GPUDevice *gpu, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *
 	int aa = e ? atoi(e) != 0 : settings_int("post_aa", 1) != 0 && !gfx_gpu_fsr_active();   /* (FSR anti-aliases the 3D frame itself: FXAA over it would only blur) */
 	float sharp = k ? (float)atof(k) : (float)settings_float("sharpen", 0.35);
 	if (sharp < 0) sharp = 0; if (sharp > 1) sharp = 1;
-	if ((!aa && sharp <= 0) || !src || dw < 1 || dh < 1 || !setup(gpu, swap_fmt)) return 0;
+	/* M1663i: the dynamic vibrance is applied to the final image in the swapchain pass (on the GPU, so the render scale keeps
+	 * its detail; the CPU path's 1x frame is not used) */
+	const char *ve = getenv("RECOMP_VIBRANCE");
+	int vib = ve ? atoi(ve) : settings_int("vibrance", 0);
+	if (vib < 0) vib = 0; if (vib > 100) vib = 100;
+	int strong = 0;   /* M1663j: the 強烈模式 is removed (the author found it too strong); 100% on the normal curve is the standard */
+	if ((!aa && sharp <= 0 && vib <= 0) || !src || dw < 1 || dh < 1 || !setup(gpu, swap_fmt)) return 0;
 	SDL_GPUTexture *cur = src;
 	if (aa) {   /* FXAA at the frame's own resolution, into a copy with the same mip levels (rebuilt from it) */
 		if (!ensure(gpu, &aa_tex, &aa_w, &aa_h, &aa_l, sw, sh, levels)) return 0;
-		pass(cmd, aa_tex, SDL_GPU_LOADOP_DONT_CARE, p_fxaa, src, 0, 0, (float)sw, (float)sh, 0);
+		pass(cmd, aa_tex, SDL_GPU_LOADOP_DONT_CARE, p_fxaa, src, 0, 0, (float)sw, (float)sh, 0, 0, 0);
 		if (levels > 1) SDL_GenerateMipmapsForGPUTexture(cmd, aa_tex);
 		cur = aa_tex;
 	}
 	uint32_t lv = 0;   /* the smallest level still at least the size it is drawn at (as window.c's own blit) */
 	while (lv + 1 < levels && ph / (float)(2u << lv) >= dh && pw / (float)(2u << lv) >= dw) lv++;
+	if (vib > 0 && p_vib) {   /* M1663i: the GPU vibrance pass: scale into a window-sized copy, then the colour pass to the swapchain */
+		uint32_t ow = (uint32_t)(dw + 0.5f), oh = (uint32_t)(dh + 0.5f);
+		if (!ensure(gpu, &out_tex, &out_w, &out_h, NULL, ow, oh, 1)) return 0;
+		SDL_GPUBlitInfo bl = { .source = { .texture = cur, .mip_level = lv, .x = (Uint32)px >> lv, .y = (Uint32)py >> lv, .w = (Uint32)pw >> lv, .h = (Uint32)ph >> lv },
+			.destination = { .texture = out_tex, .w = ow, .h = oh }, .load_op = SDL_GPU_LOADOP_DONT_CARE, .filter = SDL_GPU_FILTER_LINEAR };
+		SDL_BlitGPUTexture(cmd, &bl);
+		pass(cmd, swap, SDL_GPU_LOADOP_CLEAR, p_vib, out_tex, dx, dy, (float)ow, (float)oh, 0, vib / 100.0f, (float)strong);
+		return 1;
+	}
 	if (sharp <= 0) {   /* AA only: the scaled blit straight into the swapchain */
 		SDL_GPUBlitInfo bl = { .source = { .texture = cur, .mip_level = lv, .x = (Uint32)px >> lv, .y = (Uint32)py >> lv, .w = (Uint32)pw >> lv, .h = (Uint32)ph >> lv },
 			.destination = { .texture = swap, .x = (Uint32)dx, .y = (Uint32)dy, .w = (Uint32)dw, .h = (Uint32)dh },
@@ -183,6 +199,6 @@ int post_present(SDL_GPUDevice *gpu, SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *
 	SDL_GPUBlitInfo bl = { .source = { .texture = cur, .mip_level = lv, .x = (Uint32)px >> lv, .y = (Uint32)py >> lv, .w = (Uint32)pw >> lv, .h = (Uint32)ph >> lv },
 		.destination = { .texture = out_tex, .w = ow, .h = oh }, .load_op = SDL_GPU_LOADOP_DONT_CARE, .filter = SDL_GPU_FILTER_LINEAR };
 	SDL_BlitGPUTexture(cmd, &bl);
-	pass(cmd, swap, SDL_GPU_LOADOP_CLEAR, p_cas, out_tex, dx, dy, (float)ow, (float)oh, sharp);
+	pass(cmd, swap, SDL_GPU_LOADOP_CLEAR, p_cas, out_tex, dx, dy, (float)ow, (float)oh, sharp, 0, 0);
 	return 1;
 }

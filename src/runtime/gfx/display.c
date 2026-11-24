@@ -775,7 +775,27 @@ static int play_motion(float a[3], float g[3], float q[4]) {   /* the latest rec
 /* pad2: a PS TV's paired pad (the "2" reads of port 1): a DualShock's buttons, L1/R1 and L2/R2 apart and the stick clicks
  * (window_input_pad2); every other read gets the handheld's (window_input) */
 static void ctrl_caller_log(Cpu *c);
+static void p5d_pause_app_direct(Cpu *c) {
+	/* M1702: the game's own pause-menu creation, exactly as its code does it (0x81106888):
+	 *   fn_8116f7ca(0, "pause menu", 200, 0)
+	 * Only used when every START injection failed (the story screens can ignore simulated presses). It runs on the
+	 * guest thread inside the input HLE, the same way the runtime calls guest callbacks elsewhere. */
+	extern int p5d_pause_app_request;
+	if (!p5d_pause_app_request) return;
+	p5d_pause_app_request = 0;
+	extern void (*guest_lookup(uint32_t a))(Cpu *);
+	static void (*f)(Cpu *);
+	if (!f) f = guest_lookup(0x8116f7cau);
+	if (!f) { fprintf(stderr, "[PAUSE] direct app-create: fn_8116f7ca is not recompiled code\n"); return; }
+	Cpu n = *c;
+	n.r[0] = 0; n.r[1] = 0x81301FD4u; n.r[2] = 0xc8u; n.r[3] = 0;
+	n.r[13] = (c->r[13] - 512) & ~7u; n.r[14] = 0xfffffffeu;
+	f(&n);
+	fprintf(stderr, "[PAUSE] direct app-create: fn_8116f7ca(\"pause menu\") -> r0=%#x\n", n.r[0]);
+}
 static void ctrl_peek(Cpu *c, int pad2) {   /* (port, SceCtrlData *, count): timestamp, buttons, sticks centred */
+	{ static int t = -1; if (t < 0) { const char *e = getenv("RECOMP_PAUSE_APP_TEST"); t = e && atoi(e) != 0; } if (t) { extern int p5d_pause_app_request; p5d_pause_app_request = 1; t = 0; } }   /* M1702 self-test: exercise the direct pause-app call once */
+	p5d_pause_app_direct(c);
 	ctrl_caller_log(c);
 	input_rec_init();
 	for (uint32_t i = 0; i < A2; i++) {

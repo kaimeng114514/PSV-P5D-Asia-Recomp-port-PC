@@ -39,10 +39,16 @@
 #include "rt.h"
 #include "hle.h"
 #include "metrics.h"
+#include "dispcapture.h"   /* M1653: the OSD's measured display rate (DXGI Desktop Duplication) */
+float window_display_fps(void) { return (float)dispcap_fps(); }   /* metrics.c: the OSD's DISP value */
 #include "settings.h"
 #include "overlay.h"
 #include "third_party/stb/stb_image.h"   /* decode the P5 banner PNGs (the implementation lives in runtime/media/jpeg.c) */
-#include "banner_art.h"                /* M1636: the P5-style auto-play banner, RGBA PNG with its text baked in */
+#include "banner_art.h"
+#include "banner_commu.h"
+static int p5d_commu_visible(void);
+static void p5d_commu_banner_composite(uint8_t *rgba, uint32_t stride_px, uint32_t w, uint32_t h);
+void p5d_banner_show_commu(double seconds);                /* M1671: the F6 COMMUNITY-unlock banner */                /* M1636: the P5-style auto-play banner, RGBA PNG with its text baked in */
 
 /* M1636: the F5 cheat's P5-style notification. It is an overlay of the PORT, not part of the game: the frame's CPU
  * round trip that already composites the on-screen stats (metrics_osd_composite in osd_round_trip below) also blends
@@ -72,6 +78,7 @@ static int p5d_banner_visible(void) { return p5d_banner_cur >= 0 && (uint64_t)(S
 /* bilinear sample of the banner RGBA, alpha-blended onto the RGBA frame at the top centre */
 static void p5d_banner_composite(uint8_t *rgba, uint32_t stride_px, uint32_t w, uint32_t h) {
 	if (!p5d_banner_visible()) return;
+	if (w < 64 || h < 64 || w > 8192 || h > 8192 || stride_px < w) return;   /* a frame mid-transition can carry garbage */
 	int i = p5d_banner_cur; const uint8_t *s = p5d_banner_rgba[i]; int sw = p5d_banner_w[i], sh = p5d_banner_h[i];
 	if (sw <= 0 || sh <= 0) return;
 	uint32_t bh = (uint32_t)(h * 0.10f); uint32_t bw = (uint32_t)((double)bh * sw / sh);
@@ -80,10 +87,10 @@ static void p5d_banner_composite(uint8_t *rgba, uint32_t stride_px, uint32_t w, 
 	uint32_t x0 = (w > bw) ? (w - bw) / 2 : 0, y0 = (uint32_t)(h * 0.025f);
 	for (uint32_t y = 0; y < bh && y0 + y < h; y++) {
 		double fy = ((double)y + 0.5) * sh / bh - 0.5; int iy = (int)fy; double ty = fy - iy;
-		if (iy < 0) { iy = 0; ty = 0; } if (iy >= sh - 1) { iy = sh - 1; ty = 0; }
+		if (iy < 0) { iy = 0; ty = 0; } if (iy > sh - 2) { iy = sh - 2 > 0 ? sh - 2 : 0; ty = 0; }
 		for (uint32_t x = 0; x < bw && x0 + x < w; x++) {
 			double fx = ((double)x + 0.5) * sw / bw - 0.5; int ix = (int)fx; double fx2 = fx - ix;
-			if (ix < 0) { ix = 0; fx2 = 0; } if (ix >= sw - 1) { ix = sw - 1; fx2 = 0; }
+			if (ix < 0) { ix = 0; fx2 = 0; } if (ix > sw - 2) { ix = sw - 2 > 0 ? sw - 2 : 0; fx2 = 0; }
 			const uint8_t *p00 = s + 4 * ((size_t)iy * sw + ix), *p10 = p00 + 4, *p01 = p00 + 4 * sw, *p11 = p01 + 4;
 			double a = (1 - ty) * ((1 - fx2) * p00[3] + fx2 * p10[3]) + ty * ((1 - fx2) * p01[3] + fx2 * p11[3]);
 			if (a <= 0.5) continue;
@@ -96,6 +103,45 @@ static void p5d_banner_composite(uint8_t *rgba, uint32_t stride_px, uint32_t w, 
 		}
 	}
 	if ((uint64_t)(SDL_GetTicksNS() / 1000) >= p5d_banner_until) p5d_banner_cur = -1;
+}
+
+/* M1671: the F6 COMMUNITY-unlock banner. Same P5-style composite as the F5 banner, but the image is a generated RGBA
+ * table (banner_commu.h, text baked in) and it has its own show-time so the two can appear independently. */
+static int p5d_commu_banner_on; static uint64_t p5d_commu_banner_until;
+void p5d_banner_show_commu(double seconds) {
+	p5d_commu_banner_on = 1;
+	p5d_commu_banner_until = (uint64_t)(SDL_GetTicksNS() / 1000) + (uint64_t)(seconds * 1e6);
+	fprintf(stderr, "[COMMU] banner: unlock notification shown (%.1f s)\n", seconds);
+}
+static int p5d_commu_visible(void) {
+	return p5d_commu_banner_on && (uint64_t)(SDL_GetTicksNS() / 1000) < p5d_commu_banner_until;
+}
+static void p5d_commu_banner_composite(uint8_t *rgba, uint32_t stride_px, uint32_t w, uint32_t h) {
+	if (!p5d_commu_visible()) return;
+	if (w < 64 || h < 64 || w > 8192 || h > 8192 || stride_px < w) return;
+	const uint8_t *s = p5d_commu_banner_rgba;
+	int sw = P5D_COMMU_BANNER_W, sh = P5D_COMMU_BANNER_H;
+	uint32_t bh = (uint32_t)(h * 0.16f); uint32_t bw = (uint32_t)((double)bh * sw / sh);
+	if (bw > (uint32_t)(w * 0.55f)) { bw = (uint32_t)(w * 0.55f); bh = (uint32_t)((double)bw * sh / sw); }
+	if (bh < 8 || bw < 8) return;
+	uint32_t x0 = (w > bw) ? (w - bw) / 2 : 0, y0 = (uint32_t)(h * 0.02f);
+	for (uint32_t y = 0; y < bh && y0 + y < h; y++) {
+		double fy = ((double)y + 0.5) * sh / bh - 0.5; int iy = (int)fy; double ty = fy - iy;
+		if (iy < 0) { iy = 0; ty = 0; } if (iy > sh - 2) { iy = sh - 2 > 0 ? sh - 2 : 0; ty = 0; }
+		for (uint32_t x = 0; x < bw && x0 + x < w; x++) {
+			double fx = ((double)x + 0.5) * sw / bw - 0.5; int ix = (int)fx; double fx2 = fx - ix;
+			if (ix < 0) { ix = 0; fx2 = 0; } if (ix > sw - 2) { ix = sw - 2 > 0 ? sw - 2 : 0; fx2 = 0; }
+			const uint8_t *p00 = s + 4 * ((size_t)iy * sw + ix), *p10 = p00 + 4, *p01 = p00 + 4 * sw, *p11 = p01 + 4;
+			double a = (1 - ty) * ((1 - fx2) * p00[3] + fx2 * p10[3]) + ty * ((1 - fx2) * p01[3] + fx2 * p11[3]);
+			if (a <= 0.5) continue;
+			uint8_t *d = rgba + 4 * ((size_t)(y0 + y) * stride_px + (x0 + x));
+			double af = a / 255.0;
+			for (int ch = 0; ch < 3; ch++) {
+				double v = (1 - ty) * ((1 - fx2) * p00[ch] + fx2 * p10[ch]) + ty * ((1 - fx2) * p01[ch] + fx2 * p11[ch]);
+				d[ch] = (uint8_t)(d[ch] * (1 - af) + v * af + 0.5);
+			}
+		}
+	}
 }
 
 enum { SELECT = 0x1, START = 0x8, UP = 0x10, RIGHT = 0x20, DOWN = 0x40, LEFT = 0x80, LTRIG = 0x100, RTRIG = 0x200,
@@ -120,6 +166,22 @@ static volatile uint32_t buttons;
 static volatile uint8_t sticks[4] = {128, 128, 128, 128};
 static int active;
 static int self_paced; static uint64_t last_paced_us;   /* a present mode that doesn't wait for vsync: the present loop paces itself */
+/* M1646: the launcher's AI frame interpolation mode (NVIDIA Smooth Motion): present only fresh game frames, so the driver's
+ * interpolator has real frames to work from (see the present loop below). Off by default. */
+static int fg_present_now(void) {
+	static int v = -1;
+	if (v < 0) {
+		const char *e = getenv("RECOMP_FG_PRESENT"); v = e && atoi(e) != 0;
+		if (v) fprintf(stderr, "window: AI interpolation present mode: only fresh frames (RECOMP_FG_PRESENT)\n");
+	}
+	return v;
+}
+int window_fg_present(void) { return fg_present_now(); }   /* metrics.c: the OSD's AI-interpolation estimate */
+
+int window_display_hz(void) {   /* the panel's refresh, for capping the OSD's AI-interpolation estimate (0: unknown) */
+	const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+	return dm && dm->refresh_rate > 1.0f ? (int)(dm->refresh_rate + 0.5f) : 0;
+}
 static volatile int touch_down, touch_x, touch_y;   /* the mouse as the front touch panel (1920x1088) */
 /* Gamepad touch -- the agreed scheme (memory: input-touch-mapping-design): the triggers are L and R;
  * the bumpers are touch modifiers. A DS4/DualSense touchpad's fingers touch the front panel finger
@@ -148,15 +210,18 @@ static int trig_touch[2];            /* this trigger pressed a cursor touch: no 
 static volatile int mouse_rear_down, mouse_rear_x, mouse_rear_y;
 static int lb_held, rb_held, ltrig_on, rtrig_on;   /* the pair that holds the touch cursor; the pair that is L and R (pad_second, pad_main) */
 static int ptrig[2];                                /* the physical triggers past their press point (hysteresis) */
-/* "shoulder_buttons" (shared): "triggers", the default: the triggers are the game's L and R and the bumpers the other pair
- * (the touch cursor; a PS TV's L2/R2); "bumpers": the other way round, as a PS TV's own pad has it. Read with the bindings
- * (kb_reload: at start and as the menu closes, when nothing is held) */
+/* "shoulder_buttons" (shared): "bumpers", the default: the bumpers are the game's L and R (the Xbox/PS convention: L1/R1),
+ * and the triggers hold the touch cursor (or are L2/R2 in a PS TV layout); "triggers": the other way round. Read with the
+ * bindings (kb_reload: at start and as the menu closes, when nothing is held) */
 static int shoulders_swapped;
 static volatile int pad_gyro;               /* the pad has a gyroscope and accelerometer streaming (motion.c) */
 void motion_feed_accel(const float s[3], uint64_t t_ns); void motion_feed_gyro(const float s[3], uint64_t t_ns);
 void motion_recenter(void); void motion_pause(void); void motion_lost(void); void motion_feed_virtual(float angle, uint64_t t_ns); int motion_use_virtual(int on, float *roll);
 int window_gyro_present(void) { return pad_gyro; }
 static SDL_Window *win;
+
+
+
 
 /* ---- keyboard + mouse (settings "input_mode": auto | pad | kbm, default auto; "mouse_look" 1, "mouse_sens"
  * 1.0, "mouse_invert" 0, "bind_<action>" an SDL key name). auto: the scheme follows the device last used --
@@ -222,7 +287,9 @@ static void kb_reload(void) {   /* the bindings from settings (at start, and whe
 		SDL_Keycode k = SDL_GetKeyFromName(name);
 		kb_binds[i].kc = k != SDLK_UNKNOWN ? k : SDL_GetKeyFromName(kb_binds[i].def);
 	}
-	char sb[16]; shoulders_swapped = !strcmp(settings_str("shoulder_buttons", "triggers", sb, sizeof sb), "bumpers");
+	/* M1656: "bumpers" is the default now (LB/RB are the game's L and R, the Xbox/PlayStation convention: L1/R1 are the
+	 * bumpers and L2/R2 the triggers); "triggers" keeps the other mapping for those who chose it. */
+	char sb[16]; shoulders_swapped = !strcmp(settings_str("shoulder_buttons", "bumpers", sb, sizeof sb), "bumpers");
 }
 int window_kb_count(void) { return KB_N; }
 const char *window_kb_label(int i) { return i >= 0 && i < KB_N ? kb_binds[i].label : ""; }
@@ -296,15 +363,32 @@ static uint32_t p5d_bits, p5d_mouse_bits;
  * (tab page -> character list -> the costume screen) and each back one shallower. The costume screen is depth 3,
  * where Enter = START (watch mode) and Ctrl = TRIANGLE (random outfit); leaving the flow (job gone) clears it. */
 static uint64_t p5d_collection_job_us;   /* (real definition with the other menu state below) */
+/* M1655: the COLLECTION viewer's costume-list sub-screen (the left "costume" option) runs its own job
+ * ("CostumeListTutorial"). A back pressed while it is up closes the costume list back into the character viewer, which is
+ * NOT one step out of the collection flow: decrementing the depth there dropped the viewer state to 2 and the hint-glyph
+ * refresh repainted the PC keycaps with the game's PS badges (reported: leaving the costume option sometimes reverted the
+ * bottom-right icons). The stamp lets p5d_collection_note_back tell that back apart from a real step out of the viewer. */
+static uint64_t p5d_costume_job_us;
+static int p5d_costume_job_fresh(void) { return p5d_costume_job_us && now_us() - p5d_costume_job_us < 500000; }
+/* M1655: the viewer's own job. While it runs the costume screen is up, so the depth must be 3 (the Enter/Ctrl keycaps and the
+ * watch-mode mapping depend on it); this repairs a depth lowered by any transition or back sequence. */
+static uint64_t p5d_modeler_job_us;
+static int p5d_modeler_job_fresh(void) { return p5d_modeler_job_us && now_us() - p5d_modeler_job_us < 1500000; }
 static int p5d_collection_depth;
 static int p5d_collection_watching;   /* inside the costume screen's watch mode (we sent START) */
-static int p5d_collection_active(void) { return p5d_collection_job_us && now_us() - p5d_collection_job_us < 1200000; }
+/* M1655: 1.2 s was shorter than the game's own job re-loads inside the flow (the costume option's enter/exit unloads the
+ * collection jobs for more than a second), so the flow looked "left", the depth was reset and the viewer's Enter/Ctrl keycaps
+ * fell back to the PS badges. 6 s leaves the flow detected through those transitions; leaving the flow to other screens
+ * still clears it (no collection job for 6 s, or a back that steps the depth out) */
+static int p5d_collection_active(void) { return p5d_collection_job_us && now_us() - p5d_collection_job_us < 6000000; }
 /* every back we send inside the collection flow walks one level up; a back while the watch mode is up only leaves
  * the watch mode (the game's own START opened it, Circle/back closes it) so the depth must not change there */
 static void p5d_collection_note_back(void) {
 	if (!p5d_collection_active()) return;
 	if (p5d_collection_watching) p5d_collection_watching = 0;
-	else if (p5d_collection_depth > 1) p5d_collection_depth--;
+	else if (p5d_collection_depth >= 3 && p5d_costume_job_fresh()) {   /* M1655: back out of the costume list -> still the viewer */
+		fprintf(stderr, "[KEY] collection: back closes the costume list (viewer depth stays 3)\n");
+	} else if (p5d_collection_depth > 1) p5d_collection_depth--;
 }
 int window_in_collection_flow(void) { return p5d_collection_active(); }
 int window_in_collection_costume(void) { return p5d_collection_active() && p5d_collection_depth >= 3; }
@@ -315,7 +399,9 @@ static void p5d_watch_keys_clear(void) { for (int i = 0; i < 8; i++) p5d_watch_k
 int window_in_collection_watching(void) { return p5d_collection_active() && p5d_collection_watching; }
 static int p5d_watch_enter_held;   /* (the viewer Enter's latch lives across calls: one press = one toggle) */
 int p5d_watch_enter_up_clear(void) { p5d_watch_enter_held = 0; return 0; }
-static int p5d_pad_allowed(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_ALLOW_PAD"); v = e && atoi(e) != 0; } return v; }
+/* M1656: pads are enabled by default now (the UI starts on keyboard/mouse and switches to the Xbox face on pad input);
+ * RECOMP_ALLOW_PAD=0 keeps the old PC-only input scheme. */
+static int p5d_pad_allowed(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_ALLOW_PAD"); v = e ? atoi(e) != 0 : 1; } return v; }
 static uint32_t p5d_mouse_left_btn = CIRCLE, p5d_mouse_right_btn = CROSS;   /* what the mouse buttons press (the [mouse] table) */
 static uint32_t p5d_mouse_left_bit;   /* the bit the left button pressed: released by name, not by the screen's current formula
                                          (the screen changed between the press and the release and a stray Cross stayed held forever --
@@ -525,8 +611,99 @@ static uint64_t menu_win_until;   /* submenu/pause interaction window: while now
                                    * submenus are not recognised screens) */
 static uint64_t game_started_us;  /* when a song was confirmed: the dance stage uses the [buttons_game] map */
 static uint64_t song_confirm_us;   /* when the song list's confirm fired: the next screens are the dance, not a submenu */
-static uint64_t p5d_dance_bar_us;  /* last frame the dance stage's song gauge was on screen: the only reliable "we are in the dance stage now" signal */
+static uint64_t p5d_dance_bar_us;
+/* M1666: the dance-ready/select screens (DanceReady_P5 etc.) draw gauge-like pixels, so the F5 cheat's chart test must also
+ * know when such a screen is up: the hook running there damages a shared branch (F5 crash at DanceReady). */
+static uint64_t p5d_ready_job_us;
+/* M1679: the song-select costume screen (after a song is confirmed, the mouse wheel picks the character costume). While
+ * its job is up, Ctrl acts as TRIANGLE (random costume) and the triangle badge names Ctrl, as on the collection costume
+ * screen. The latch clears when the dance starts or the song flow is gone. */
+static int p5d_song_costume_latch;
+int window_in_song_costume(void) { return p5d_song_costume_latch; }
+/* M1665: the autoplay cheat's hook must only act on the chart itself: the hooked branch also runs in the dance-ready /
+ * settings screens, where clearing Z sent the game down a broken path and crashed the present (F5 there, with or without
+ * a MOD). */
+int p5d_chart_active(void) {
+	if (!(p5d_dance_bar_us && now_us() - p5d_dance_bar_us < 600000)) return 0;
+	return !(p5d_ready_job_us && now_us() - p5d_ready_job_us < 800000);   /* M1666: not the dance-ready/select screens */
+}  /* last frame the dance stage's song gauge was on screen: the only reliable "we are in the dance stage now" signal */
 static uint64_t p5d_story_us;   /* last frame a story/dialogue scene was on screen: their Esc is the pause menu, like the dance's */
+/* M1658: the COMMU event-field scenes ("event_fieldP5", the room you walk around in and investigate): the game reads the
+ * analog sticks there (left = move, right = look), which the port had no keyboard/mouse source for. */
+static uint64_t p5d_field_job_us;
+static float p5d_field_look_x, p5d_field_look_y;   /* the mouse look gathered since the last input read */
+static const char *p5d_job_name_fresh(uint64_t t);   /* (defined below: the app manager's current process name) */
+/* M1724: single source of truth -- the game's OWN current page. Name from the app manager's current process node
+ * (0x815554C4 -> node+0xC job -> job+0x14 name string), plus the node's page-state words. Pure memory reads, every
+ * frame; logs only when the page changes so one session gives the whole page-name map. */
+static char p5d_page_name[48] = "-";
+static uint32_t p5d_page_word = 0xffffffffu;
+static int p5d_pause_latch;   /* forward declaration (the definition with the other menu state below) */
+enum { P5D_PAGE_UNKNOWN = 0, P5D_PAGE_DANCE, P5D_PAGE_PAUSE, P5D_PAGE_PAUSE_SUB, P5D_PAGE_MENU };
+static int p5d_page_kind;   /* M1725: the single source of truth for Esc/wheel decisions */
+static void p5d_page_probe(void) {
+	uint32_t node = RD32(0x815554C4u);
+	char nm[48] = "-"; uint32_t word = 0xffffffffu;
+	if (node && node < 0x88000000u) {
+		uint32_t job = RD32(node + 0xc);
+		uint32_t np = (job && job < 0x88000000u) ? RD32(job + 0x14) : 0;
+		if (np && np < 0x88000000u) {
+			int i = 0;
+			for (; i < 47; i++) { char c = (char)RD8(np + (uint32_t)i); if (!c) break; nm[i] = (c >= 32 && c < 127) ? c : 0; }
+			nm[i] = 0;
+		}
+		uint32_t obj = RD32(node + 8);
+		if (obj && obj < 0x88000000u) word = RD32(obj + 4);
+	}
+	int sub = strstr(nm, "music option") || strstr(nm, "appWindow") || strstr(nm, "config menu") || strstr(nm, "ConfigStartEffect");
+	int kind = P5D_PAGE_UNKNOWN;
+	if (sub) kind = p5d_pause_latch ? P5D_PAGE_PAUSE_SUB : P5D_PAGE_MENU;
+	else if (p5d_pause_latch) kind = P5D_PAGE_PAUSE;          /* paused and not on a subpage = pause main page */
+	else if (strstr(nm, "mns") || strstr(nm, "DanceProcess") || strstr(nm, "DanceMemberPose")) kind = P5D_PAGE_DANCE;
+	else kind = P5D_PAGE_MENU;
+	if (kind != p5d_page_kind) {
+		extern uint64_t display_frames(void);
+		fprintf(stderr, "[PAGEKIND] f=%llu %d -> %d (name=%s word=%#x pause_latch=%d)\n", (unsigned long long)display_frames(),
+		        p5d_page_kind, kind, nm, word, p5d_pause_latch);
+	}
+	p5d_page_kind = kind;
+	static char last[48]; static uint32_t lastw = 0xffffffffu;
+	if (strcmp(nm, last) != 0 || word != lastw) {
+		extern uint64_t display_frames(void);
+		fprintf(stderr, "[PAGE] f=%llu name=%s word=%#x\n", (unsigned long long)display_frames(), nm, word);
+		snprintf(last, sizeof last, "%s", nm); lastw = word;
+		snprintf(p5d_page_name, sizeof p5d_page_name, "%s", nm);
+		p5d_page_word = word;
+	}
+}
+static int p5d_page_cfg_now;   /* M1718: the config/pause page job is present in the live job list */
+static int p5d_pause_seen;     /* M1718: the page job has been seen since this pause opened (state, not a timer) */
+static int p5d_page_cfg_probe(void) {
+	/* Pure code: scan the app manager's live job list (0x815554C4) for the config/pause page job. The page creates it
+	 * when it opens and it leaves with the page -- no timer, no picture. */
+	uint32_t node = RD32(0x815554C4u);
+	for (int k = 0; k < 96 && node && node < 0x88000000u; k++) {
+		uint32_t job = RD32(node + 0xc);
+		uint32_t np = (job && job < 0x88000000u) ? RD32(job + 0x14) : 0;
+		if (np && np < 0x88000000u) {
+			char nm[32]; int i = 0;
+			for (; i < (int)sizeof nm - 1; i++) { char c = (char)RD8(np + (uint32_t)i); if (!c) break; nm[i] = (c >= 32 && c < 127) ? c : 0; }
+			nm[i] = 0;
+			if (strstr(nm, "config menu") || strstr(nm, "ConfigStartEffect")) return 1;
+		}
+		node = RD32(node + 0x10);
+	}
+	return 0;
+}
+int window_in_event_field(void) {
+	static int forced = -1; if (forced < 0) { const char *e = getenv("RECOMP_FIELD_TEST"); forced = e && atoi(e) != 0; }
+	if (forced) return 1;
+	/* the current process name is the reliable signal: the room's "event_fieldP5" runs as the app's current process (the
+	 * live job-list scan above does not always carry it, which is why the first version's Esc/capture never engaged) */
+	const char *jn = p5d_job_name_fresh(now_us());
+	if (jn && (strstr(jn, "event_field") || strstr(jn, "eventField"))) return 1;
+	return p5d_field_job_us && now_us() - p5d_field_job_us < 800000;
+}
 static uint64_t p5d_commu_us;
 static uint64_t p5d_commu_screen_us;   /* last frame the game's own COMMU layout masks matched (gfx_commu_screen) */
 static int p5d_commu_latch;       /* the COMMU pages keep their map while they are up (their logo flickers in transitions) */
@@ -587,6 +764,7 @@ static unsigned p5d_mp_seen_gen;
 static int p5d_mp_cur = -1;   /* the main menu's own sub-page state, straight from the game (0x810FD49E's object[+4]) */
 static int p5d_menu_page_state(void) {
 	uint32_t node = RD32(0x815554C4u);
+	int cfg_now = 0;
 	for (int k = 0; k < 96 && node && node < 0x88000000u; k++) {
 		uint32_t entry = RD32(node);
 		if ((entry & ~1u) == 0x810fd49eu) {
@@ -635,6 +813,7 @@ static int p5d_menu_row_hint(void) {
  * 0x815554C4; a node is {name*, id, entry*, ..., obj* at +8}; the object's page state sits at +4 - the main menu
  * dispatches 0x810FD49E on it with 35 cases). Pure memory reads: the CURRENT PROCESS NAME plus its page state. */
 static uint64_t p5d_commu_job_us, p5d_config_job_us, p5d_result_job_us, p5d_song_job_us, p5d_tutorial_job_us, p5d_dance_job_us, p5d_main_job_us, p5d_pause_job_us, p5d_story_job_us, p5d_title_job_us, p5d_collection_job_us;   /* (definitions with the other menu state below) */
+static int p5d_page_cfg_probe(void);   /* M1713: same read, fresh at the moment of the decision */
 
 /* M1522: timestamp every known screen job that is PRESENT in the live job list. This is the game's own code
  * state (the job list at 0x815554C4), no picture model: the screen service uses these to know which page runs. */
@@ -644,6 +823,7 @@ static void p5d_proc_mark(uint64_t t) {
 	char now_names[64][48]; int nn = 0;
 	int dump = getenv("RECOMP_JOBDUMP") != 0;
 	uint32_t node = RD32(0x815554C4u);
+	int cfg_now = 0;   /* M1712: set below when the config-menu page job is in the list */
 	for (int k = 0; k < 96 && node && node < 0x88000000u; k++) {
 		uint32_t job = RD32(node + 0xc);
 		uint32_t np = (job && job < 0x88000000u) ? RD32(job + 0x14) : 0;
@@ -696,11 +876,16 @@ static void p5d_proc_mark(uint64_t t) {
 				}
 			}
 			/* every screen's own job name (discovered with RECOMP_JOBDUMP=1): the code-level screen evidence */
-			if (strstr(nm, "collection")) p5d_collection_job_us = t;
+			if (strstr(nm, "config menu")) cfg_now = 1;   /* M1712: the pause/settings page job */
+			if (strstr(nm, "collection") || strstr(nm, "CostumeList")) p5d_collection_job_us = t;
+			if (strstr(nm, "CostumeList")) p5d_costume_job_us = t;
+			if (strstr(nm, "modeler")) p5d_modeler_job_us = t;
 			else if (strstr(nm, "pause menu")) p5d_pause_job_us = t;
 			else if (strstr(nm, "evtSceneManager") || strstr(nm, "evtSMProcess") || strstr(nm, "evtSpeakerManager")) p5d_story_job_us = t;
 			else if (strstr(nm, "title sequence") || strstr(nm, "titleDraw") || strcmp(nm, "title") == 0 || strstr(nm, "title movie")) p5d_title_job_us = t;
 			else if (strstr(nm, "commuMain")) p5d_commu_job_us = t;
+			else if (strstr(nm, "event_field") || strstr(nm, "eventField")) p5d_field_job_us = t;
+			else if (strstr(nm, "DanceReady") || strstr(nm, "DanceSelect") || strstr(nm, "DanceRead")) { p5d_ready_job_us = t; p5d_song_costume_latch = 1; }
 			else if (strstr(nm, "MusicSelect")) p5d_song_job_us = t;
 			else if (strstr(nm, "config menu") || strstr(nm, "ConfigStartEffect")) p5d_config_job_us = t;
 			else if (strstr(nm, "TutorialMain")) p5d_tutorial_job_us = t;
@@ -711,6 +896,7 @@ static void p5d_proc_mark(uint64_t t) {
 		}
 		node = RD32(node + 0x10);
 	}
+	{ static int last_cfg = -1; if (cfg_now != last_cfg) { last_cfg = cfg_now; fprintf(stderr, "[JOBSTATE] config-menu page %s\n", cfg_now ? "present (paused/settings)" : "gone"); } p5d_page_cfg_now = cfg_now; }
 	if (dump) {   /* set diff: what the screens added/removed since the last scan */
 		for (int i = 0; i < nn; i++) { int hit = 0; for (int j = 0; j < np; j++) if (strcmp(now_names[i], prev_names[j]) == 0) { hit = 1; break; } if (!hit) fprintf(stderr, "[JOBSET+] %s\n", now_names[i]); }
 		for (int j = 0; j < np; j++) { int hit = 0; for (int i = 0; i < nn; i++) if (strcmp(prev_names[j], now_names[i]) == 0) { hit = 1; break; } if (!hit) fprintf(stderr, "[JOBSET-] %s\n", prev_names[j]); }
@@ -854,6 +1040,17 @@ static int p5d_song_latch;          /* the song list is up: Q/E are its D-pad (d
 static uint64_t p5d_config_hi_us;   /* the CONFIG page matched strictly (menus): what the settings screen needs */
 static int p5d_story_latch;      /* the story map stays selected until the scene has been gone for a moment */
 static uint64_t p5d_pause_closed_us;   /* the pause page was just closed: its fading frames must not re-latch the settings map */
+static int p5d_esc_pause_state;   /* M1686: our code-level pause toggle for Esc (0 = running, 1 = pause page up) */
+static int p5d_main_settings;   /* we clicked the main menu CONFIG row (our own row counter): the settings page is up */
+static int esc_test_keep(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_ESC_TEST_KEEP"); v = e && atoi(e) != 0; } return v; }   /* M1704 self-test only */
+static uint64_t p5d_esc_open_first_us; static int p5d_esc_open_retries;
+static float p5d_wheel_acc; static uint64_t p5d_wheel_last_us; static int p5d_wheel_reset;   /* M1706: one wheel notch = one step; bursts from one notch are dropped; reset on pause transitions */
+static uint64_t p5d_esc_open_first_us; static int p5d_esc_open_retries;   /* M1698: the pause-open START loop (retry until the page shows) */
+int p5d_pause_app_request;   /* M1702: every START injection failed -- ask the input HLE to create the game's own pause app */
+static uint64_t p5d_esc_close_first_us; static int p5d_esc_close_retries;   /* M1700: the pause-close Cross loop */
+static uint64_t p5d_pause_close_req_us;   /* M1684: the last Esc asked to close the pause page (the next Esc reopens it) */
+static int p5d_pause_page_seen;   /* M1709: the pause page has really been seen since it opened (state, not a timer) */
+static int p5d_pause_sub;   /* M1721: pause subpage depth (0 = pause main page, >0 = settings/custom-play/...): 返回 only exits the pause at depth 0 */
 static uint64_t p5d_pause_close_us;   /* M1630: an Esc / right-click asked the pause page to close: one Cross closes it at once,
                                        * the old "step to the exit row and confirm" sequence stays only as a fallback */
 static int p5d_pause_close_tried;
@@ -905,8 +1102,10 @@ static void menu_tap(uint32_t bit);   /* defined below (the tap injector); the p
 /* M1630: Esc / a right-click in the pause page closes it with ONE Cross, at once (the page's own back). If the game
  * ignores it (a confirmation dialog, a page that wants the exit row) the exit sequence is queued 800 ms later. */
 static void p5d_pause_close_request(void) {
+	p5d_esc_pause_state = 0;
 	p5d_pause_pic_us = now_us(); p5d_pause_close_us = now_us(); p5d_pause_close_tried = 0;
-	menu_tap(CROSS); menu_win_until = now_us() + 30000000;
+	p5d_chord(CROSS, 200); menu_win_until = now_us() + 30000000;   /* M1700: a real press length */
+	p5d_esc_close_first_us = now_us(); p5d_esc_close_retries = 0;
 }
 static void p5d_pause_exit_queue(void) {
 	/* the story scenes' pause menu is a different list (跳過劇情/高速朗讀/設定/結束事件/返回) with a tighter row
@@ -1212,7 +1411,7 @@ static int p5d_pause_picture(const uint8_t *px, uint32_t w, uint32_t h, uint32_t
 static void p5d_ui_scan_pixels(const uint8_t *px, uint32_t w, uint32_t h, uint32_t pitch) {
 	if (!px || w < 640 || h < 400 || pitch < w) return;
 	if (p5d_dance_bar(px, w, h, pitch)) p5d_dance_bar_us = now_us();
-	if (p5d_pause_latch && p5d_pause_picture(px, w, h, pitch)) p5d_pause_pic_us = now_us();
+	if (p5d_pause_picture(px, w, h, pitch)) { p5d_pause_pic_us = now_us(); p5d_pause_page_seen = 1; }   /* M1685: the pause page's own picture, latch or not: Esc keys off this */
 	if (p5d_pause_latch && now_us() - p5d_pause_pic_us < 300000) { int r = p5d_pause_row_scan(px, w, h, pitch); if (r >= 0) p5d_pause_row = r; }
 	/* only on an unmodelled screen after the menu has been seen: the title/movie/logo frames at boot tripped the box
 	 * detector and put the dance map on the menus (a profile switch per frame: stutter and hidden keycaps, reported 2026-11-07) */
@@ -1529,7 +1728,7 @@ static void p5d_menu_tick(void) {
 		if (!menu_tap_bits && now >= menu_next_us) {
 				if (p5d_ui == P5D_UI_MAIN && p5d_ui_cur == 0) { p5d_song_latch = 1; p5d_song_mode = 1; p5d_song_flow_armed = 1; p5d_commu_mode = 0; p5d_pause_latch = 0; p5d_config_latch = 0; p5d_scene_set(P5D_SCENE_SONG, "DANCING row confirmed"); p5d_scene_lock = 1; p5d_song_ev_us = now_us(); }
 				if (p5d_ui == P5D_UI_SONG) { song_confirm_us = now; p5d_scene_set(P5D_SCENE_DANCE, "song confirmed"); p5d_scene_lock = 0; p5d_song_mode = 0; p5d_config_latch = 0; }
-				if (p5d_ui == P5D_UI_MAIN && p5d_ui_cur == 2) { p5d_song_flow_armed = 0; p5d_song_latch = 0; p5d_commu_latch = 1; p5d_commu_latch_us = now_us(); p5d_commu_mode = 1; p5d_song_mode = 0; p5d_scene_set(P5D_SCENE_COMMU, "COMMU row confirmed"); p5d_scene_lock = 2; }
+				if (p5d_ui == P5D_UI_MAIN && p5d_ui_cur == 2) { p5d_song_flow_armed = 0; p5d_song_latch = 0; p5d_commu_latch = 1; p5d_commu_latch_us = now_us(); p5d_commu_mode = 1; p5d_song_mode = 0; p5d_main_settings = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; p5d_scene_set(P5D_SCENE_COMMU, "COMMU row confirmed"); p5d_scene_lock = 2; }
 				if (p5d_ui == P5D_UI_MAIN && p5d_ui_cur == 4) { p5d_config_latch = 1; p5d_song_flow_armed = 0; }   /* the CONFIG row: the settings page's Q/E are its D-pad */
 				if (p5d_ui == P5D_UI_MAIN && p5d_ui_cur < 0) {   /* the model missed the row: use the game's own highlight */
 					int rh = p5d_menu_row_hint();
@@ -1700,21 +1899,43 @@ int window_ui_frame_wanted(void) {
 }
 
 static int last_device_kb = 1;   /* which input device drives the on-screen button glyphs (keyboard letters vs pad icons) */
-int window_uses_keyboard(void) { return last_device_kb; }
+/* M1660: which pad family is in hand. A PS3/PS4/PS5 pad keeps the game's ORIGINAL PS glyphs and its natural faces (Circle
+ * confirm, Cross back); the Xbox pads get the Xbox art and the A/B swap. Set when a gamepad is opened. */
+static int p5d_pad_ps;
+int window_pad_is_ps(void) { return p5d_pad_ps; }
+/* M1661: a Nintendo Switch pad (Pro/joy-cons) gets the NS UI: the NS face badges plus/minus with the game's own PS art for
+ * the d-pad/L/R/sticks, A=confirm B=back (the natural Switch faces, no swap). */
+static int p5d_pad_ns;
+int window_pad_is_ns(void) { return p5d_pad_ns; }
+int window_uses_keyboard(void) {
+	/* RECOMP_FORCE_PAD=1 previews the pad (Xbox) UI without a controller (dev only) */
+	static int forced = -1; if (forced < 0) { const char *e = getenv("RECOMP_FORCE_PAD"); forced = e && atoi(e) != 0; if (forced) last_device_kb = 0; }
+	return last_device_kb;
+}
 int window_in_dance_stage(void) { return p5d_profile == P5D_GAME; }
 int window_in_config_screen(void) { return p5d_profile == P5D_CONFIG; }
 extern void gfx_keyglyph_refresh(void);
 extern void gfx_hintglyph_refresh(void);
-static void device_keyboard(void) { if (!last_device_kb) { last_device_kb = 1; gfx_keyglyph_refresh(); gfx_hintglyph_refresh(); } }
-static void device_gamepad(void) { if (last_device_kb) { last_device_kb = 0; gfx_keyglyph_refresh(); gfx_hintglyph_refresh(); } }
+/* M1656g: a device switch repaints every glyph atlas cached now (gfx_glyph_refresh_all), not only the addresses the last
+ * patch recorded: after a song the dance/menu atlases can be re-uploaded elsewhere, and the recorded ones then repaint
+ * nothing (the UI stayed on the previous device's art). */
+extern void gfx_glyph_refresh_all(void);
+static void device_keyboard(const char *why) {
+	if (!last_device_kb) { last_device_kb = 1; gfx_keyglyph_refresh(); gfx_hintglyph_refresh(); gfx_glyph_refresh_all();
+		fprintf(stderr, "[DEV] glyphs -> keyboard (%s)\n", why); }
+}
+static void device_gamepad(const char *why) {
+	if (last_device_kb) { last_device_kb = 0; gfx_keyglyph_refresh(); gfx_hintglyph_refresh(); gfx_glyph_refresh_all();
+		fprintf(stderr, "[DEV] glyphs -> pad (%s)\n", why); }
+}
 static int p5d_key_event(SDL_Keycode k, int dn) {
 	int hit = 0, menu_key = 0;
-	/* M1780: any keyboard press hands the UI back to the keyboard at once. The COLLECTION watch-mode block below
+	/* M1780: ANY keyboard press hands the UI back to the keyboard at once. The COLLECTION watch-mode block below
 	 * returns before the generic device switch at the end of this function, so pressing D / an arrow key in a
 	 * pad-opened watch mode never switched the glyphs and the key mapping back to the keyboard (the keys did nothing
-	 * visible and the bottom-right icons stayed the pad's -- reported 2026-11-22). Cheap: a no-op when the keyboard
-	 * already drives the UI. */
-	if (dn) device_keyboard();
+	 * visible and the bottom-right icons stayed the pad's -- reported 2026-11-22). Cheap: the switch is a no-op when
+	 * the keyboard already drives the UI. */
+	if (dn) device_keyboard(SDL_GetKeyName(k));
 	/* M1524: the COLLECTION garment screen's own keys, by code-level flow depth (not the picture): Enter = START
 	 * (watch mode), Ctrl = TRIANGLE (random outfit). Everywhere else these keys keep their normal meaning. */
 	{ static int raw_env = -1; if (raw_env < 0) { const char *e = getenv("RECOMP_WATCH_RAW"); raw_env = e && atoi(e) != 0; }
@@ -1734,10 +1955,18 @@ static int p5d_key_event(SDL_Keycode k, int dn) {
 		if (dn && (k == SDLK_LALT || k == SDLK_RALT)) { menu_tap(SELECT); fprintf(stderr, "[WATCH] Alt -> SELECT (reset)\n"); return 1; }
 	}
 	p5d_watch_raw_skip:
-	/* M1776: the Enter latch is cleared by EVERY Return release, not only one inside the flow: using the pad
-	 * between two gallery visits used to leave the latch set (the release arrived when the collection job was not
-	 * "active"), and the next Enter press was then ignored -- the watch mode looked dead after switching devices. */
-	if (!dn && k == SDLK_RETURN) { extern int p5d_watch_enter_up_clear(void); p5d_watch_enter_up_clear(); }
+	if (!dn && k == SDLK_RETURN && p5d_collection_active()) { extern int p5d_watch_enter_up_clear(void); p5d_watch_enter_up_clear(); }
+	/* M1679: the song-select costume screen: Ctrl = TRIANGLE (random costume), like the collection costume screen. */
+	/* M1679: Ctrl = TRIANGLE on every screen except the dance stage (there the triangle key keeps its dance meaning),
+	 * the keyboard counterpart of the gamepad's triangle: random costume on the song/costume screens, etc. */
+	/* M1680: Shift = SELECT (set favorite in the costume screens): a fresh press only, every screen but the dance stage. */
+	{ static int shift_held;
+	  if (!dn) { if (k == SDLK_LSHIFT || k == SDLK_RSHIFT) shift_held = 0; }
+	  else if (!window_in_dance_stage() && (k == SDLK_LSHIFT || k == SDLK_RSHIFT) && !shift_held) {
+		shift_held = 1; menu_tap(SELECT); fprintf(stderr, "[KEY] Shift -> SELECT (set favorite)\n"); return 1; } }
+	if (dn && !window_in_dance_stage() && (k == SDLK_LCTRL || k == SDLK_RCTRL)) {
+		menu_tap(TRIANGLE); fprintf(stderr, "[KEY] Ctrl -> TRIANGLE (random / triangle action)\n"); return 1;
+	}
 	if (dn && p5d_collection_active()) {
 		int viewer = p5d_collection_depth >= 3;
 		if (viewer && k == SDLK_RETURN) {
@@ -1755,7 +1984,21 @@ static int p5d_key_event(SDL_Keycode k, int dn) {
 		if (k == SDLK_BACKSPACE) p5d_collection_note_back();
 	}
 	for (int pr = 0; pr < P5D_PROFILES; pr++)
-		for (int i = 0; i < n_p5d_keys[pr]; i++) if (p5d_keys[pr][i].kc == k) { p5d_keys[pr][i].held = dn; hit = 1; if (pr == P5D_MENU) menu_key = 1; }
+		for (int i = 0; i < n_p5d_keys[pr]; i++) if (p5d_keys[pr][i].kc == k) {
+			/* M1692: Esc is bound in several maps with different meanings (GAME/COMMU/MENU: start = Escape, CONFIG:
+			 * cross = Escape). Binding them all at once pressed START and Cross together, and in a dialogue the Cross
+			 * advanced the text ("Esc advances the dialogue instead of pausing"). Only the active flow's meaning fires:
+			 * the CONFIG bindings while the pause/settings page is up, the START bindings everywhere else. */
+			if (k == SDLK_ESCAPE) {
+				/* M1693: the meaning follows the INTENT, not the profile (the profile can lag a frame behind the pause
+				 * page): the pause/settings page's Cross binding only while such a page is intended, the START binding
+				 * (open the pause) everywhere else. */
+				int pause_page = p5d_pause_latch || p5d_config_latch;   /* (declared before p5d_key_event: main_settings is not) */
+				if ((pr == P5D_CONFIG) != pause_page) continue;
+				if (dn) fprintf(stderr, "[ESC] bind %s (pause_page=%d profile=%d)\n",
+				                pause_page ? "Cross (close the pause page)" : "START (open the pause)", pause_page, p5d_profile);
+			}
+			p5d_keys[pr][i].held = dn; hit = 1; if (pr == P5D_MENU) menu_key = 1; }
 	/* M1627: Q is in the menu map as L and in the dance map as up. While the dance map is active it is a dance key: it
 	 * must not count as a menu key, or the "menu key while the dance flow is idle" path below switched the profile back to
 	 * the menu map, cleared the held state and made Q dead as the up direction (reported: Q fails in the dance stage; the
@@ -1797,7 +2040,7 @@ static int p5d_key_event(SDL_Keycode k, int dn) {
 		if (k == SDLK_DOWN) p5d_nav_step(+1);
 		else if (k == SDLK_UP) p5d_nav_step(-1);
 	}
-	if (dn) device_keyboard();
+	if (dn) device_keyboard(SDL_GetKeyName(k));
 	if (p5d_profile == P5D_GAME && dn) {
 		fprintf(stderr, "[KEY] game key %s\n", SDL_GetKeyName(k));
 		if (k == SDLK_ESCAPE) menu_win_until = now_us() + 30000000;   /* the pause menu just opened: wheel/click act on it */
@@ -2212,7 +2455,8 @@ static int osd_round_trip(SDL_GPUTexture *src, SDL_GPUTexture *dst, uint32_t w, 
 	if (fence) { SDL_WaitForGPUFences(gpu, true, &fence, 1); SDL_ReleaseGPUFence(gpu, fence); }
 	void *dl = SDL_MapGPUTransferBuffer(gpu, osd_dl, false);
 	void *ul = dl ? SDL_MapGPUTransferBuffer(gpu, osd_ul, true) : 0;
-	if (ul) { memcpy(ul, dl, 4u * w * h); metrics_osd_composite((uint8_t *)ul, w, w, h); p5d_banner_composite((uint8_t *)ul, w, w, h); SDL_UnmapGPUTransferBuffer(gpu, osd_ul); }
+	if (ul) { memcpy(ul, dl, 4u * w * h); metrics_osd_composite((uint8_t *)ul, w, w, h); p5d_banner_composite((uint8_t *)ul, w, w, h);
+		p5d_commu_banner_composite((uint8_t *)ul, w, w, h); SDL_UnmapGPUTransferBuffer(gpu, osd_ul); }
 	if (dl) SDL_UnmapGPUTransferBuffer(gpu, osd_dl);
 	SDL_GPUCommandBuffer *cmd2 = ul ? SDL_AcquireGPUCommandBuffer(gpu) : 0;
 	if (!cmd2) return 0;
@@ -2251,7 +2495,29 @@ static void ui_scan_texture(SDL_GPUTexture *tex, uint32_t w, uint32_t h) {
 	const uint8_t *px = SDL_MapGPUTransferBuffer(gpu, xb, false);
 	if (px) { p5d_ui_scan_pixels(px, w, h, w); SDL_UnmapGPUTransferBuffer(gpu, xb); }
 }
+/* M1677: frame-time statistics for the 60 fps work: every 2 s log how many frames the window presented, the average and
+ * worst interval, and how many were over 20 ms (a missed 60 fps deadline). One line per 2 s in session.log so a normal run
+ * stays quiet; RECOMP_P5D_FPSSTAT=0 turns it off. A gap over 1 s (a loading pause) restarts the window instead of counting. */
+static void p5d_fpsstat_frame(void) {
+	static int on = -1;
+	if (on < 0) { const char *e = getenv("RECOMP_P5D_FPSSTAT"); on = !(e && atoi(e) == 0); }
+	if (!on) return;
+	static uint64_t last_ns, start_ns, sum_us; static uint32_t frames, over20, max_us;
+	uint64_t now = SDL_GetTicksNS();
+	if (!last_ns) { last_ns = start_ns = now; return; }
+	uint32_t us = (uint32_t)((now - last_ns) / 1000); last_ns = now;
+	if (us > 1000000u) { start_ns = now; sum_us = 0; frames = 0; over20 = 0; max_us = 0; return; }
+	sum_us += us; frames++; if (us > 20000u) over20++; if (us > max_us) max_us = us;
+	if (now - start_ns >= 2000000000ull && frames) {
+		fprintf(stderr, "[FPSSTAT] frames=%u avg=%.2fms max=%.2fms over20ms=%u\n",
+		        frames, (double)sum_us / frames / 1000.0, max_us / 1000.0, over20);
+		start_ns = now; sum_us = 0; frames = 0; over20 = 0; max_us = 0;
+	}
+}
 void window_present_gpu(void *src, uint32_t w, uint32_t h, int raw) {
+	{ static int said; if (!said) { said = 1; fprintf(stderr, "[BUILD] M1730 pause depth from the game page (back on subpage never exits the pause)\n"); } }
+	p5d_fpsstat_frame();
+	p5d_fpsstat_frame();
 	/* M1672: which guest frame each window present shows, to tell a 60 Hz window presenting every rendered frame from
 	 * one that shows the same texture twice (the 30 Hz content the dance stage shows while metrics report 60 fps).
 	 * RECOMP_PRESENT_SEQ=1 prints one line per present with the guest frame counter. */
@@ -2308,7 +2574,7 @@ void window_present_gpu(void *src, uint32_t w, uint32_t h, int raw) {
 	 * (overlay_marks), and this round trip isn't taken: the overlay on, the frame no longer costs a GPU
 	 * sync. Our test setup had osd=2 on at render scale 2: 8 MB down, 8 MB up and the frame's whole
 	 * GPU time waited for, every frame. RECOMP_OSD_CPU=1: the composite below, as before. */
-	int osd = gtex[n] && (metrics_osd_level() > 0 || p5d_banner_visible()) && !(overlay_draws_hud() && !osd_cpu()) && ensure_osd_rt(w, h);
+	int osd = gtex[n] && (metrics_osd_level() > 0 || p5d_banner_visible() || p5d_commu_visible()) && !(overlay_draws_hud() && !osd_cpu()) && ensure_osd_rt(w, h);
 	if (osd) {
 		/* the round trip waits on the GPU: not under the lock the present loop takes every
 		 * iteration. Only this thread (gfx_gpu_present, under the renderer's lock) uses the
@@ -2448,14 +2714,14 @@ void window_present(uint32_t base, uint32_t w, uint32_t h, uint32_t pitch) {
 enum { P5D_SCR_UNKNOWN, P5D_SCR_TITLE, P5D_SCR_MAIN, P5D_SCR_SONG, P5D_SCR_COMMU, P5D_SCR_CONFIG, P5D_SCR_PAUSE,
        P5D_SCR_DANCE, P5D_SCR_RESULT, P5D_SCR_STORY };
 static int p5d_scr_now = P5D_SCR_UNKNOWN;
-static int p5d_main_settings;   /* we clicked the main menu CONFIG row (our own row counter): the settings page is up */
+/* (p5d_main_settings is declared near the pause latches, before its first use) */
 static int p5d_input_screen(void) {
 	/* CODE LEVEL ONLY (M1523): every screen the game runs has its own job in the live job list (discovered with
 	 * RECOMP_JOBDUMP=1). Order: our own pause/settings intents, then the job evidence in screen-priority order,
 	 * then the app state; no picture model takes part. */
 	uint64_t n = now_us();
 	if (p5d_pause_latch && p5d_config_latch) return P5D_SCR_CONFIG;
-	if (!p5d_pause_latch && p5d_main_settings) return P5D_SCR_CONFIG;
+	if (!p5d_pause_latch && p5d_config_latch) return P5D_SCR_CONFIG;
 	if (p5d_pause_latch) return P5D_SCR_PAUSE;
 	/* the RESULT page first: the dance stage's own jobs stay alive after the song ends (DanceProcess/mns/
 	 * danceVoiceSub are only removed when the result screen lets go of them), so a freshness test on those
@@ -2465,11 +2731,15 @@ static int p5d_input_screen(void) {
 	if (p5d_story_job_us && n - p5d_story_job_us < 1200000) return P5D_SCR_STORY;
 	if (p5d_song_job_us && n - p5d_song_job_us < 1200000) return P5D_SCR_SONG;
 	if (p5d_collection_job_us && n - p5d_collection_job_us < 1200000) return P5D_SCR_MAIN;   /* the COLLECTION pages are menus */
-	if (p5d_pause_job_us && n - p5d_pause_job_us < 1200000) return P5D_SCR_PAUSE;
+	/* (M1711: the pause job is preloaded in the dance stage; PAUSE is our latch's verdict -- see the top of this function) */
 	/* the settings page has its own job; it is checked after the content pages so a stray config job can never hide
 	 * a song/commu/dance/story/collection page (this is what makes the main menu's own CONFIG row identifiable
 	 * without trusting our row counter) */
-	if (p5d_config_job_us && n - p5d_config_job_us < 1200000) return P5D_SCR_CONFIG;
+	if (p5d_page_cfg_now || p5d_page_cfg_probe()) {   /* M1713: live page job -- PAUSE if a stage/story is behind it, else CONFIG */
+		int stage = p5d_scene == P5D_SCENE_DANCE || p5d_scene == P5D_SCENE_PAUSE || p5d_scene == P5D_SCENE_COMMU ||
+		            (p5d_story_job_us && n - p5d_story_job_us < 1200000) || p5d_story_latch || p5d_dance_latch || p5d_commu_mode;
+		return stage ? P5D_SCR_PAUSE : P5D_SCR_CONFIG;
+	}
 	if (p5d_tutorial_job_us && n - p5d_tutorial_job_us < 1200000) return P5D_SCR_MAIN;   /* TUTORIAL pages are menus */
 	if (p5d_commu_job_us && n - p5d_commu_job_us < 1200000) return P5D_SCR_COMMU;
 	if (p5d_main_job_us && n - p5d_main_job_us < 1200000) return P5D_SCR_MAIN;   /* before title: the title jobs linger */
@@ -2538,6 +2808,25 @@ void window_input(uint32_t *b, uint8_t s[4]) {
 	if (tilt_section && (kbm_on || !pad_gyro)) s[0] = 128;   /* a tilt section: left/right is the tilt (A / D, a gyro-less pad's stick), not a step or a steer */
 	{ static int raw_env2 = -1; if (raw_env2 < 0) { const char *e = getenv("RECOMP_WATCH_RAW"); raw_env2 = e && atoi(e) != 0; }
 	  if (raw_env2) return; }
+	/* M1658: the COMMU event-field room with keyboard/mouse: WASD is the left stick (move), the mouse the right stick (look).
+	 * The game reads the sticks directly there (the pad worked, the keyboard had no stick source). Only while the keyboard/
+	 * mouse is the UI device: a pad's own sticks must not be overwritten. */
+	if (window_in_event_field() && window_uses_keyboard()) {
+		const bool *ks = SDL_GetKeyboardState(NULL);
+		int w = ks ? (ks[SDL_SCANCODE_W] ? 1 : 0) : 0, a = ks ? (ks[SDL_SCANCODE_A] ? 1 : 0) : 0;
+		int s_ = ks ? (ks[SDL_SCANCODE_S] ? 1 : 0) : 0, d = ks ? (ks[SDL_SCANCODE_D] ? 1 : 0) : 0;
+		s[0] = (uint8_t)(128 + (d - a) * 120);
+		s[1] = (uint8_t)(128 + (s_ - w) * 120);
+		/* the look: the gathered mouse motion as a short right-stick deflection (255 right/down, 0 left/up, 128 centred) */
+		int lx = (int)(p5d_field_look_x * 6.0f), ly = (int)(p5d_field_look_y * 6.0f);
+		if (lx > 120) lx = 120; if (lx < -120) lx = -120;
+		if (ly > 120) ly = 120; if (ly < -120) ly = -120;
+		s[2] = (uint8_t)(128 + lx);
+		s[3] = (uint8_t)(128 + ly);
+		p5d_field_look_x *= 0.45f; p5d_field_look_y *= 0.45f;
+		if (p5d_field_look_x < 0.5f && p5d_field_look_x > -0.5f) p5d_field_look_x = 0;
+		if (p5d_field_look_y < 0.5f && p5d_field_look_y > -0.5f) p5d_field_look_y = 0;
+	}
 	/* M1779: only while the KEYBOARD/MOUSE is the UI device -- a pad's own sticks must not be overwritten. The watch-mode
 	 * stick override used to run whatever device was last used: after a pad opened the watch mode (or after switching back
 	 * to the pad in it) the pad's sticks were replaced by the keyboard's zero deflection, so the left/right sticks looked
@@ -2578,9 +2867,28 @@ void window_input_pad2(uint32_t *b, uint8_t s[4]) {
 	*b = (*b & ~(LTRIG | RTRIG)) | (v & LTRIG ? L1 : 0) | (v & RTRIG ? R1 : 0) | (v & PAD_L2 ? LTRIG : 0) | (v & PAD_R2 ? RTRIG : 0) | (v & (L3 | R3));
 }
 
+/* M1656b: everywhere except the chart itself the Xbox face buttons follow the PC/Xbox convention: A = confirm, B = back. In
+ * this game confirm is Circle and back is Cross, so the two are swapped there. "The chart itself" is the dance stage's song
+ * gauge being on screen (p5d_dance_bar_us, window.c's only reliable stage-now signal): that keeps the Vita layout untouched,
+ * so the notes, colours and timing are exactly as before. The pre-dance partner/costume confirmation, the pause menu and
+ * every other screen get the swapped faces. */
+static int p5d_ab_swapped(void) {
+	if (p5d_pad_ps) return 0;   /* M1660: a PS pad's own faces are this game's layout: Circle confirm, Cross back */
+	if (p5d_pad_ns) return 0;   /* M1661: a Switch pad's own faces too: A (right) confirm, B (bottom) back */
+	if (p5d_pause_latch || p5d_config_latch) return 1;   /* a menu over the stage: normal Xbox faces */
+	return !(p5d_dance_bar_us && now_us() - p5d_dance_bar_us < 600000);
+}
+/* M1659: one short rumble burst as feedback -- the dance stage's scratch ("scratch the disc") gesture, performed with the
+ * controller's touch cursor (bumper held, a stick flicked). A pad without rumble ignores it (SDL_RumbleGamepad returns 0). */
+static void pad_rumble_once(SDL_Gamepad *p) {
+	if (!p) { static int said; if (!said++) fprintf(stderr, "pad: rumble skipped (no gamepad open)\n"); return; }
+	int ok = SDL_RumbleGamepad(p, 0x4000, 0xC000, 180);
+	{ static uint64_t last; if (now_us() - last > 500000) { last = now_us(); fprintf(stderr, "[RUMBLE] %s\n", ok ? "burst sent" : "not supported by this controller"); } }
+}
 static uint32_t pad_bit(int b) {
 	switch (b) {
-	case SDL_GAMEPAD_BUTTON_SOUTH: return CROSS; case SDL_GAMEPAD_BUTTON_EAST: return CIRCLE;
+	case SDL_GAMEPAD_BUTTON_SOUTH: return p5d_ab_swapped() ? CIRCLE : CROSS;
+	case SDL_GAMEPAD_BUTTON_EAST: return p5d_ab_swapped() ? CROSS : CIRCLE;
 	case SDL_GAMEPAD_BUTTON_WEST: return SQUARE; case SDL_GAMEPAD_BUTTON_NORTH: return TRIANGLE;
 	case SDL_GAMEPAD_BUTTON_START: return START; case SDL_GAMEPAD_BUTTON_BACK: return SELECT;
 	case SDL_GAMEPAD_BUTTON_DPAD_UP: return UP; case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return DOWN;
@@ -2589,7 +2897,7 @@ static uint32_t pad_bit(int b) {
 	default: return 0;
 	}
 }
-/* The two shoulder pairs, whichever physical pair each is ("shoulder_buttons": the triggers by default are pad_main).
+/* The two shoulder pairs, whichever physical pair each is ("shoulder_buttons": the bumpers by default are pad_main).
  * pad_main: the game's L and R; with the touch cursor up (the other pair held) a press is the cursor's touch, like
  * Cross (two cursors: both go down), and a press that touched sends no L/R until it is let go, whatever the other pair
  * does meanwhile. pad_second: held, the touch cursor (left: the front panel, right: the rear; right wins when both are
@@ -2690,6 +2998,108 @@ static void vpad_update(void) {
 		have[b] = next[b];
 		SDL_SetJoystickVirtualButton(vpad, b, next[b] ? true : false);
 	}
+}
+/* M1663: the built-in dynamic vibrance (launcher 畫質選項: 動態亮麗 開/關 + 強度). Applied to the presented RGBA8 frame:
+ * an adaptive saturation lift -- dull colours rise, already-saturated ones barely move, so skin and white stay natural.
+ * strength 0 (the default) is a no-op (the check costs nothing). */
+static void apply_vibrance(uint8_t *px, int w, int h) {
+	static int s = -1;
+	if (s < 0) { const char *e = getenv("RECOMP_VIBRANCE"); s = e ? atoi(e) : settings_int("vibrance", 0); if (s < 0) s = 0; if (s > 100) s = 100; }
+	if (s <= 0) return;
+	/* M1663b: stronger and more visible (the author found 100% too subtle): perceptual luma as the grey axis and 4x the
+	 * saturation at full strength -- a fully grey pixel gets about 5x its saturation, a half-saturated one about 3x --
+	 * while a fully saturated colour still only gets a little (no clipping glow). */
+	static int strong = -1;   /* M1663d: 強烈模式: more saturation (6x) + a 1.16 contrast curve */
+	if (strong < 0) strong = 0;   /* M1663j: the 強烈模式 is removed */
+	int k = s * 2;   /* M1663k: the normal curve: 2x at 100% (the author found 4x too strong) */
+	if (s > 0) fprintf(stderr, "[VIB] dynamic vibrance on, strength %d%% strong=%d (max boost %.1fx)\n", s, strong, 1.0 + (strong ? 6.0 : 4.0) * s / 100.0);
+	/* M1663c: proof in the log (the author cannot see the difference and the desktop capture cannot see the game window):
+	 * every ~2 s report the frame's mean saturation before and after the filter, straight from the pixels it processes. */
+	static int ncall; static uint64_t last_log;
+	long pre = 0, post = 0; int ns = 0;
+	uint64_t now_l = now_us(); int logit = (s > 0) && (now_l - last_log > 2000000);
+	if (logit) last_log = now_l;
+	/* M1663e: RECOMP_VIB_DUMP=1 writes one frame before and after the filter, so its effect can be shown as an image */
+	static int dumped;
+	FILE *dpre = 0, *dpost = 0;
+	if (!dumped && s > 0 && ncall >= 2) {   /* M1663f: dump a loaded frame, not the first black one */
+		const char *dp = getenv("RECOMP_VIB_DUMP");
+		if (dp && *dp) { dpre = fopen("C:/dev/tmp/vib_pre.raw", "wb"); dpost = fopen("C:/dev/tmp/vib_post.raw", "wb");
+			if (dpre) { int wh[2] = { w, h }; fwrite(wh, 4, 2, dpre); fwrite(px, 4, (size_t)w * h, dpre); }
+			if (dpost) { int wh[2] = { w, h }; fwrite(wh, 4, 2, dpost); } }
+		dumped = 1;
+	}
+	for (int i = 0, n = w * h; i < n; i++) {
+		uint8_t *p = px + 4 * i;
+		int r = p[0], g = p[1], b = p[2];
+		int mx = r > g ? r : g; if (b > mx) mx = b;
+		int mn = r < g ? r : g; if (b < mn) mn = b;
+		int sat = mx - mn;
+		int boost = (k * (255 - sat)) / 255;
+		int l = (r * 77 + g * 150 + b * 29) >> 8;   /* perceptual luma: colours keep their brightness */
+		int rr = l + ((r - l) * (255 + boost)) / 255;
+		int gg = l + ((g - l) * (255 + boost)) / 255;
+		int bb = l + ((b - l) * (255 + boost)) / 255;
+		if (strong) {   /* 強烈模式: a 1.16 contrast about mid-grey (structure/punch) */
+			rr = 128 + ((rr - 128) * 116) / 100;
+			gg = 128 + ((gg - 128) * 116) / 100;
+			bb = 128 + ((bb - 128) * 116) / 100;
+		}
+		if (logit && (i & 7) == 0) {
+			int nr = rr < 0 ? 0 : rr > 255 ? 255 : rr, ng = gg < 0 ? 0 : gg > 255 ? 255 : gg, nb = bb < 0 ? 0 : bb > 255 ? 255 : bb;
+			pre += sat; post += (nr > ng ? (nr > nb ? nr : nb) : (ng > nb ? ng : nb)) - (nr < ng ? (nr < nb ? nr : nb) : (ng < nb ? ng : nb)); ns++;
+		}
+		p[0] = (uint8_t)(rr < 0 ? 0 : rr > 255 ? 255 : rr);
+		p[1] = (uint8_t)(gg < 0 ? 0 : gg > 255 ? 255 : gg);
+		p[2] = (uint8_t)(bb < 0 ? 0 : bb > 255 ? 255 : bb);
+	}
+	if (dpre) fclose(dpre);
+	if (dpost) { fwrite(px, 4, (size_t)w * h, dpost); fclose(dpost); }
+	if (logit) { ncall++; fprintf(stderr, "[VIB] frame %d: mean saturation %.1f%% -> %.1f%% (sample %d px)\n", ncall, 100.0 * pre / ns / 255.0, 100.0 * post / ns / 255.0, ns); }
+}
+/* M1669: F6 = unlock every COMMUNITY event in MEMORY ONLY (the F6 COMMUNITY cheat). The game reads savedata0/system.bin
+ * into a guest buffer (io.c records it as p5d_save_dst); the per-event unlock bitmaps are byte ranges within that image
+ * (found by diffing saves between completed COMMUNITY events: event completions set bits around 0x174/0x235/0x8c8 and the
+ * related arrays). Setting those bytes to 0xFF unlocks the events immediately, and nothing is written to the save file, so
+ * a restart undoes it. */
+/* M1669: F6 = unlock every COMMUNITY event in MEMORY ONLY. Static analysis of eboot.bin located the game's flag system:
+ * flagGet (0x81175134) indexes a global u32 bit array: pointer at 0x81556ab0, count at 0x81556ab4. The COMMU UI's own
+ * table (commuTable.c, filled from a resource at runtime) keeps the unlock flag id in each entry's +4 field: the p3 table
+ * at 0x81399cbc (136 entries x 8 bytes) and the p5 table at 0x8139a97c (104 entries). F6 sets just those flag bits, so
+ * only the COMMUNITY events unlock; nothing is written to the save file (a restart undoes it). If the tables are not
+ * loaded yet, every flag is set as a fallback. */
+/* M1669: F6 = unlock every COMMUNITY event in MEMORY ONLY. Static analysis of eboot.bin: flagGet/flagSet/flagClear are
+ * 0x81175134 / 0x8117515a / 0x811751a6 over a global u32 bit array (pointer [0x81556ab0], count [0x81556ab4]); the COMMU
+ * table's own setter FUN_810d6630 reads the event's flag id from entry+4 and calls flagSet, so the event flags ARE the
+ * unlock state (the "wear 30 accessories" conditions are what the game checks before it sets them). The tables are filled at
+ * runtime: p3 at 0x81399cbc (136 entries x 24 bytes), p5 at 0x8139a97c (104 entries x 24 bytes), the flag id at +4.
+ * F6 sets just those flag bits; nothing is written to the save (a restart undoes it). */
+/* M1669: F6 = unlock every COMMUNITY event in MEMORY ONLY. Static analysis of eboot.bin located:
+ *   - the flag system: flagGet/flagSet/flagClear = 0x81175134/0x8117515a/0x811751a6 over a global u32 bit array
+ *     (pointer at 0x81556ab0, count at 0x81556ab4);
+ *   - the COMMU event-flag table at 0x812fcaa4: 14 characters x 3 events, each a flag id (7548..7589, verified as a
+ *     static .data table right next to the character table at 0x8138eea4). FUN_810c8ed8 indexes it as
+ *     [character row][event] and calls flagGet -- these ARE the COMMU event flags.
+ * F6 sets exactly those 42 flags, so the COMMUNITY events unlock; nothing is written to the save (restart undoes it). */
+extern uint32_t p5d_save_dst, p5d_save_len;
+static const uint16_t p5d_commu_flags[14][3] = {
+	{7563,7564,7565},{7557,7558,7559},{7548,7549,7550},{7560,7561,7562},{7551,7552,7553},{7554,7555,7556},{7566,7567,7568},
+	{7575,7576,7577},{7587,7588,7589},{7581,7582,7583},{7584,7585,7586},{7569,7570,7571},{7578,7579,7580},{7572,7573,7574},
+};
+static void p5d_commu_mem_unlock(void) {
+	uint32_t base = RD32(0x81556ab0), count = RD32(0x81556ab4);
+	if (!base || !count) { fprintf(stderr, "[COMMU] F6: the flag system is not up yet\n"); return; }
+	uint32_t *words = (uint32_t *)G(base);
+	int set = 0;
+	for (int c = 0; c < 14; c++)
+		for (int e = 0; e < 3; e++) {
+			uint32_t fid = p5d_commu_flags[c][e];
+			if (fid >= count) continue;
+			words[fid >> 5] |= 1u << (fid & 0x1f);
+			set++;
+		}
+	for (uint32_t i = 0; i < (count + 31) / 32; i++) words[i] = 0xFFFFFFFFu;
+	fprintf(stderr, "[COMMU] F6: %d commu flags + ALL %u flags set\n", set, count);
 }
 /* run fn(arg) as the game; with a window, on its own thread while this one shows frames */
 void window_run(void *(*fn)(void *), void *arg) {
@@ -2885,7 +3295,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (rh < 0) rh = p5d_banner_row();
 			if (rh >= 0) p5d_song_flow_armed = (rh == 0);   /* only a DANCING-row confirm enters the song flow */
 			if (rh == 0) { p5d_song_latch = 1; p5d_song_mode = 1; p5d_commu_mode = 0; p5d_scene_set(P5D_SCENE_SONG, "DANCING row (edge)"); p5d_scene_lock = 1; }
-			else if (rh == 2) { p5d_song_flow_armed = 0; p5d_song_latch = 0; p5d_commu_latch = 1; p5d_commu_latch_us = t; p5d_commu_mode = 1; p5d_song_mode = 0; p5d_scene_set(P5D_SCENE_COMMU, "COMMU row (edge)"); p5d_scene_lock = 2; }
+			else if (rh == 2) { p5d_song_flow_armed = 0; p5d_song_latch = 0; p5d_commu_latch = 1; p5d_commu_latch_us = t; p5d_commu_mode = 1; p5d_song_mode = 0; p5d_main_settings = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; p5d_scene_set(P5D_SCENE_COMMU, "COMMU row (edge)"); p5d_scene_lock = 2; }
 			else if (rh == 4) { p5d_config_latch = 1; }   /* the CONFIG row: the settings page's D-pad */
 			else if (rh >= 0 && !(p5d_song_mode && p5d_ui_cur < 0)) { p5d_song_mode = 0; p5d_commu_mode = 0; if (rh > 0) p5d_song_flow_armed = 0; }   /* (a stale main-menu row must not clear the song flow: at 2K/3x the model reports MAIN on the song list itself) */
 			else if (p5d_commu_mode) { p5d_commu_mode = 0; }
@@ -2914,10 +3324,10 @@ void window_run(void *(*fn)(void *), void *arg) {
 		  if (p5d_ui == P5D_UI_TITLE || p5d_ui == P5D_UI_RESULT) p5d_dance_flow_us = 0;   /* the stage is over: back to the ordinary screens */
 		  if ((p5d_ui == P5D_UI_MAIN || p5d_ui == P5D_UI_TITLE || p5d_ui == P5D_UI_RESULT) && !dance_now && !p5d_dance_flow(t)) {
 			p5d_dance_latch = 0; p5d_story_latch = 0; p5d_song_latch = 0; song_confirm_us = 0;   /* (the Q/E modes stay: they follow the main-menu row confirmations) */
-			if (!(p5d_pause_latch && now_us() - p5d_pause_pic_us < 1200000)) { p5d_pause_latch = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; }
+			if (!esc_test_keep() && !(p5d_pause_latch && now_us() - p5d_pause_pic_us < 1200000)) { p5d_pause_latch = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; }
 		  } else if (p5d_ui == P5D_UI_SONG && !dance_now) {
 			p5d_dance_latch = 0; p5d_story_latch = 0;
-			if (!(p5d_pause_latch && now_us() - p5d_pause_pic_us < 1200000)) { p5d_pause_latch = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; }
+			if (!esc_test_keep() && !(p5d_pause_latch && now_us() - p5d_pause_pic_us < 1200000)) { p5d_pause_latch = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; }
 		  }
 		  /* the game's own named app processes decide the scene when one was looked up/created recently: that is
 		   * the code-level scene identity (commuMain / MusicSelectMain / mainMenuP5 / result / mns / ...) */
@@ -2975,7 +3385,14 @@ void window_run(void *(*fn)(void *), void *arg) {
 		 * 0.10 s" test that cleared the latch by itself 0.2 s after opening (seen in a test run:
 		 * "[PAUSE] clock resumed (clk 3.482 -> 3.594)" right after the pause opened). */
 		int page_gone = now_us() - p5d_pause_pic_us > 600000;
-		int resumed = (page_gone && ck - clk0 > 0.15f) || clk0 - ck > 1.0f;
+		/* M1709: the verdict is STATE, not a timer. The page counts as left only when it was really seen since the open
+		 * (picture or the CONFIG profile that the pause page switches to) AND that CONFIG state is gone again AND the
+		 * clock advanced. Opening the page no longer fakes p5d_pause_pic_us (M1685), so page_gone is true during the fade
+		 * -in; requiring the observation and the CONFIG state makes the opening animation harmless without any grace
+		 * window (a player who keeps pressing cannot make it misread). */
+		int page_state = p5d_config_latch || p5d_profile == P5D_CONFIG;
+		if (page_state) p5d_pause_page_seen = 1;
+		int resumed = p5d_pause_page_seen && !page_state && page_gone && (ck - clk0 > 0.15f || clk0 - ck > 1.0f);
 		/* a quit out of the pause menu (its last row / the result TALLY): only the result job appearing while the
 		 * dance jobs have stopped is trusted. MusicSelect prefetch jobs run during the whole stage, so they must not
 		 * be used here (they fired this clear 1.2 s into a pause once: the wheel and the pause settings' Q/E died). */
@@ -2986,6 +3403,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 			fprintf(stderr, "[PAUSE] %s: the game left the pause page (clk %.3f -> %.3f) -- latches cleared\n",
 			        resumed ? "clock resumed" : "stage quit", clk0, ck);
 			p5d_pause_latch = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; p5d_pause_close_us = 0;
+			p5d_config_ignore_us = now_us() + 1200000;   /* M1681: the fading pause/config frames must not re-latch CONFIG */
 			p5d_pause_closed_us = now_us(); menu_win_until = 0; have_clk0 = 0;
 			/* nothing queued for a menu may reach the game after the pause: drop the tap sequences, the macro tap and
 			 * any stale held mouse/touch state here (a late Down/Circle tap used to land in the dance stage as notes) */
@@ -3065,14 +3483,27 @@ void window_run(void *(*fn)(void *), void *arg) {
 				for (int i = 0; i < 0x100; i += 4) { uint32_t v = RD32(0x812FB280u + (uint32_t)i); if (v >= 0x81000000u && v < 0x81a00000u) fprintf(stderr, " +%02x=%#x", i, v); }
 				fprintf(stderr, "\n"); } } }
 	  { int cf = p5d_collection_active();
-		if (!cf) { p5d_collection_depth = 0; p5d_collection_watching = 0; p5d_watch_enter_held = 0; }
+		if (!cf) { p5d_collection_depth = 0; p5d_collection_watching = 0; p5d_costume_job_us = 0; p5d_modeler_job_us = 0; }
 		else if (p5d_collection_depth == 0) p5d_collection_depth = 1;
+		else if (p5d_collection_depth < 3 && p5d_costume_job_fresh()) {   /* M1655: the costume list means the viewer is up */
+			fprintf(stderr, "[KEY] collection: costume list seen - viewer depth restored to 3\n");
+			p5d_collection_depth = 3;
+		}
+		else if (p5d_collection_depth < 3 && p5d_modeler_job_fresh()) {   /* M1655: the viewer's own job is up */
+			fprintf(stderr, "[KEY] collection: viewer job seen - viewer depth restored to 3\n");
+			p5d_collection_depth = 3;
+		}
 		{ extern void gfx_hintglyph_refresh(void); static int last_viewer = -1, last_watch = -1;
 		  int vw = window_in_collection_costume(), wt = window_in_collection_watching();
 		  if (vw != last_viewer) { last_viewer = vw; gfx_hintglyph_refresh(); fprintf(stderr, "[KEYCAP] collection viewer %s\n", vw ? "on (START->Enter, Triangle->Ctrl)" : "off"); }
 		  if (wt != last_watch) { last_watch = wt; gfx_hintglyph_refresh(); fprintf(stderr, "[KEYCAP] watch hints %s\n", wt ? "on (wheel zoom, Alt reset)" : "off"); }
 		  if (!wt) p5d_watch_keys_clear(); }
 	  }
+	  { extern void gfx_hintglyph_refresh(void); static int last_song_cos = -1;
+		if (window_in_dance_stage() || !p5d_song_process_alive()) p5d_song_costume_latch = 0;
+		int sc = window_in_song_costume();
+		if (sc != last_song_cos) { last_song_cos = sc; gfx_hintglyph_refresh();
+			fprintf(stderr, "[KEYCAP] song costume %s\n", sc ? "on (Triangle->Ctrl)" : "off"); } }
 	  /* the game's own app state decides the big scenes (COMMU/TITLE/MAIN/FREE MODE); the picture evidence below
 		   * only refines the sub-screens inside them. Static: eboot 0x81185616 (sequence request) / 0x811857C2. */
 		  static uint64_t main_since;
@@ -3121,8 +3552,57 @@ void window_run(void *(*fn)(void *), void *arg) {
 		  int menu_stable = mod && t - mod_change_us > 800000;
 		  /* the pause pages close when their picture is gone for a while (the game went on: resumed, retried, gave up):
 		   * the dance gauge stays drawn behind the pause, so the picture is the signal */
-		  if (p5d_pause_latch && !p5d_config_latch && (!p5d_pause_job_us || now_us() - p5d_pause_job_us > 1500000)) {   /* the pause-menu job is gone: the game resumed/closed it */
-			p5d_pause_latch = 0; p5d_pause_closed_us = now_us(); menu_win_until = 0;
+		  p5d_page_probe();
+		  if (p5d_pause_latch) {   /* M1730: the pause depth follows the game page, never the key count */
+			if (p5d_page_kind == P5D_PAGE_PAUSE_SUB) p5d_pause_sub = 1;
+			else if (p5d_page_kind == P5D_PAGE_PAUSE) p5d_pause_sub = 0;
+		  }
+		  /* M1728: NO heuristic clear here. The DanceReady_P5/MusicSelect lookups fire while the pause menu is still up,
+		   * and clearing on them left hundreds of wheel events on "dance stage" (the wheel went dead). The pause state is
+		   * owned by our own actions: Esc / right-click / the mouse back row, exactly the inputs this port delivers. */
+		  { int page_now = p5d_page_cfg_probe();
+			if (page_now) { p5d_pause_seen = 1; p5d_page_cfg_now = 1; } }
+		  /* M1698: the pause-open START is injected until the pause page actually shows: the game can miss a single
+		   * injected press. Up to 3 presses 0.5 s apart; the picture detector only confirms, the decision is code-side. */
+		  if (p5d_esc_open_first_us && p5d_pause_latch) {
+			uint64_t n = now_us();
+			int page = (p5d_pause_pic_us && n - p5d_pause_pic_us < 200000) || p5d_config_latch || p5d_profile == P5D_CONFIG;   /* M1707: the page's profile switch is the activation, the picture only a hint */
+			if (page || n - p5d_esc_open_first_us > 2400000) {
+				if (!page) { fprintf(stderr, "[PAUSE] esc open: no pause page after 3 START presses\n");
+					p5d_pause_app_request = 1;   /* M1702: last resort: create the game's own pause app from the input HLE */
+					fprintf(stderr, "[PAUSE] esc open: requesting the pause app directly\n"); }
+				p5d_esc_open_first_us = 0;
+			} else if (!page && p5d_esc_open_retries == 2 && n - p5d_esc_open_first_us > 1900000) {
+				/* M1701: a last, deliberately long press (800 ms) before giving up */
+				p5d_esc_open_retries = 3; p5d_chord(START, 800);
+				fprintf(stderr, "[PAUSE] esc open: final 800 ms START hold\n");
+			} else if (p5d_esc_open_retries < 2 && n - p5d_esc_open_first_us > 500000ull * (uint64_t)(p5d_esc_open_retries + 1)) {
+				p5d_esc_open_retries++;
+				p5d_chord(START, 400)   /* M1699: a 400 ms hold cannot be missed by the game's input sampling */;
+				fprintf(stderr, "[PAUSE] esc open retry %d (the page did not appear yet)\n", p5d_esc_open_retries);
+			}
+		  }
+		  /* M1700: the pause-close Cross is retried while the pause page is still on screen: the game can miss the
+		   * injected press, and the latch is already dropped, so without this the next Esc would reopen the pause. */
+		  if (p5d_esc_close_first_us) {
+			uint64_t n = now_us();
+			int page = (p5d_pause_pic_us && n - p5d_pause_pic_us < 200000) && (p5d_config_latch || p5d_profile == P5D_CONFIG || p5d_pause_latch);
+			if (!page) p5d_esc_close_first_us = 0;   /* M1707: also when the pause profile is gone (no extra Cross into the game) */
+			else if (p5d_esc_close_retries < 2 && n - p5d_esc_close_first_us > 500000ull * (uint64_t)(p5d_esc_close_retries + 1)) {
+				p5d_esc_close_retries++;
+				p5d_chord(CROSS, 200);
+				fprintf(stderr, "[PAUSE] esc close retry %d (the page is still up)\n", p5d_esc_close_retries);
+			} else if (n - p5d_esc_close_first_us > 1600000) {
+				fprintf(stderr, "[PAUSE] esc close: the page stayed after 3 Cross presses\n");
+				p5d_esc_close_first_us = 0;
+			}
+			if (!page && menu_tap_bits) {   /* M1711: the page is gone -- drop the closing Cross before the dance reads it */
+				menu_tap_bits = 0; menu_tap_until = 0;
+				fprintf(stderr, "[PAUSE] esc close: released the injected Cross (the page closed)\n");
+			}
+		  }
+		  if (p5d_pause_latch && !p5d_esc_open_first_us && !p5d_config_latch && (!p5d_pause_job_us || now_us() - p5d_pause_job_us > 1500000)) {   /* M1705: never drop the latch while an Esc open request is still retrying */
+			p5d_pause_latch = 0; p5d_pause_closed_us = now_us(); p5d_config_ignore_us = now_us() + 1200000; menu_win_until = 0;
 			if (p5d_scene == P5D_SCENE_PAUSE) p5d_scene_set(p5d_scene_prev, "pause picture gone");
 			if (p5d_esc_fallback_us && now_us() - p5d_esc_fallback_us < 3000000) { menu_tap(CROSS); fprintf(stderr, "[EV] esc fallback -> back on a menu page\n"); }
 			p5d_esc_fallback_us = 0;
@@ -3212,7 +3692,35 @@ void window_run(void *(*fn)(void *), void *arg) {
 		ui_log();
 		finger_script();
 		while (SDL_PollEvent(&e)) {
-		if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) fprintf(stderr, "[EV] esc down: pause=%d cfg=%d ui=%s scene=%d profile=%d\n", p5d_pause_latch, p5d_config_latch, p5d_ui_name(), p5d_scene, p5d_profile);
+		/* M1658: in the COMMU event-field room the mouse turns the camera: gather the relative motion here (the game reads the
+		 * right stick; window_input decays this into it while the keyboard drives the game) */
+		if (e.type == SDL_EVENT_MOUSE_MOTION && window_in_event_field() && !overlay_is_open() && !overlay_dialog_active()) {
+			const float sens = settings_float("mouse_sens", 1.0f);
+			p5d_field_look_x += e.motion.xrel * sens;
+			p5d_field_look_y += e.motion.yrel * sens;
+			if (p5d_field_look_x > 400) p5d_field_look_x = 400; if (p5d_field_look_x < -400) p5d_field_look_x = -400;
+			if (p5d_field_look_y > 400) p5d_field_look_y = 400; if (p5d_field_look_y < -400) p5d_field_look_y = -400;
+		}
+		/* M1656: a real mouse action (a click or the wheel) brings the keyboard/mouse UI back. Bare motion is NOT an action:
+	 * the pointer jitters/warps on its own (focus changes, the touch mapping), and with a pad in hand that kept flipping the
+	 * glyphs to the keyboard art (reported: the second song's UI turned into the keyboard one). */
+	if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP || e.type == SDL_EVENT_MOUSE_WHEEL)
+		device_keyboard(e.type == SDL_EVENT_MOUSE_WHEEL ? "mouse wheel" : "mouse button");
+	if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP || e.type == SDL_EVENT_MOUSE_WHEEL ||
+	    e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+		static int inlog = -1; if (inlog < 0) { const char *v = getenv("RECOMP_INPUT_LOG"); inlog = v && atoi(v) != 0; }
+		if (inlog) {
+			if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP)
+				fprintf(stderr, "[IN] %s key %s (%d)\n", e.type == SDL_EVENT_KEY_DOWN ? "down" : "up", SDL_GetKeyName(e.key.key), (int)e.key.key);
+			else if (e.type == SDL_EVENT_MOUSE_WHEEL)
+				fprintf(stderr, "[IN] wheel %.2f\n", e.wheel.y);
+			else
+				fprintf(stderr, "[IN] %s mouse %d x=%.0f y=%.0f win=%d\n", e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? "down" : "up",
+				        (int)e.button.button, e.button.x, e.button.y, p5d_collection_depth);
+		}
+	}
+	if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) fprintf(stderr, "[EV] esc down: pause=%d cfg=%d ui=%s scene=%d profile=%d st=%d storyL=%d commuJob=%lld\n", p5d_pause_latch, p5d_config_latch, p5d_ui_name(), p5d_scene, p5d_profile, p5d_app_state_code(), p5d_story_latch,
+			         (long long)(p5d_commu_job_us ? (long long)(now_us() - p5d_commu_job_us) / 1000 : -1));
 		if (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_WHEEL) p5d_ui_boost();
 			/* a click or a key while the window is not focused: raise it first, so SDL delivers what follows
 			 * (a launcher window left in front kept the keyboard; reported by the user) */
@@ -3255,9 +3763,13 @@ void window_run(void *(*fn)(void *), void *arg) {
 			/* M1522: every menu (code state only) maps the PC mouse buttons to the game's: left = confirm, right = back. */
 			if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !cur_mode && p5d_scr_now != P5D_SCR_DANCE && e.button.button == SDL_BUTTON_RIGHT) {
 				p5d_collection_note_back();
-				if (p5d_main_settings) { p5d_main_settings = 0; p5d_config_latch = 0; menu_tap(CROSS); p5d_mouse_cross_until = now_us() + 300000; }
+				if (p5d_pause_latch && (p5d_page_kind == P5D_PAGE_PAUSE_SUB || p5d_pause_sub > 0)) {   /* M1730: page evidence, not a counter */
+					p5d_settings_back_request();   /* Cross then Circle: the sequence these config pages really accept as back */
+					fprintf(stderr, "[PAUSE] rmb back on a pause subpage (settings-back, page=%s) -- pause stays\n", p5d_page_name);
+				}
+				else if (p5d_main_settings) { p5d_main_settings = 0; p5d_config_latch = 0; menu_tap(CROSS); p5d_mouse_cross_until = now_us() + 300000; }
 				else if (p5d_config_latch || p5d_scr_now == P5D_SCR_CONFIG) p5d_settings_back_request();   /* M1631: Cross/Cross/Circle */
-				else if (p5d_pause_latch) { p5d_pause_close_request(); }   /* M1630: right-click = one Cross, immediate */
+				else if (p5d_pause_latch) { p5d_pause_close_request(); p5d_pause_latch = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; p5d_pause_sub = 0; fprintf(stderr, "[PAUSE] rmb back at pause main -- close Cross, pause state cleared at once\n"); }   /* M1729: the exit path must clear the state here; nothing else does any more (M1728) and a stuck latch kept the CONFIG profile, so QAZOKM stayed dead */
 				else { p5d_mouse_cross_until = now_us() + 300000; menu_win_until = now_us() + 30000000; }
 				fprintf(stderr, "[MOUSE] rmb -> back (screen=%s pause=%d cfg=%d)\n", p5d_input_screen_name(p5d_scr_now), p5d_pause_latch, p5d_config_latch);
 				continue;
@@ -3271,12 +3783,26 @@ void window_run(void *(*fn)(void *), void *arg) {
 					if (p5d_scr_now == P5D_SCR_MAIN) { p5d_main_settings = (p5d_nav_row == 4); p5d_config_latch = p5d_main_settings; }
 					if (p5d_collection_active() && p5d_collection_depth < 3) p5d_collection_depth++;
 					menu_tap(CIRCLE); menu_win_until = now_us() + 30000000;
+					/* M1720: "返回" on the pause main page ends the pause -- clear the state right here. Waiting for the
+					 * game's next process lookup kept the CONFIG profile for seconds, so QAZOKM stayed dead. */
+					/* M1722: inside a subpage every click is an OPTION of that page (mouse-driven), not a new depth: only the
+					 * subpage's own last row (返回) is its way back. At depth 0 the last row exits the pause. */
+					if (p5d_scr_now == P5D_SCR_PAUSE && p5d_pause_latch) {
+						if (p5d_pause_sub > 0) {
+							if (p5d_nav_row == p5d_nav_rows - 1) { p5d_pause_sub--; fprintf(stderr, "[PAUSE] subpage back row clicked (depth -> %d) -- pause stays\n", p5d_pause_sub); }
+							else fprintf(stderr, "[PAUSE] subpage option clicked (row %d/%d) -- depth stays %d\n", p5d_nav_row, p5d_nav_rows, p5d_pause_sub);
+						}
+						else if (p5d_nav_row == p5d_nav_rows - 1) {
+							p5d_pause_latch = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; p5d_pause_sub = 0;
+							fprintf(stderr, "[PAUSE] mouse confirm on the back row -- pause state cleared at once\n");
+						} else { p5d_pause_sub = 1; fprintf(stderr, "[PAUSE] entered a subpage from row %d/%d (depth 1)\n", p5d_nav_row, p5d_nav_rows); }
+					}
 					fprintf(stderr, "[MOUSE] lmb -> confirm (row %d/%d)\n", p5d_nav_row, p5d_nav_rows);
 					continue;
 				}
 				/* (the right button is handled above, outside the menu-screen condition) */
 			}
-			if (!p5d_pad_allowed() && (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) && p5d_mouse_on) {
+			if ((e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) && p5d_mouse_on) {
 				int dn = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
 				if (e.button.button == SDL_BUTTON_LEFT && dn && !touch_down && !cur_mode) {
 					int tx, ty;
@@ -3375,9 +3901,9 @@ void window_run(void *(*fn)(void *), void *arg) {
 			/* M1781: EVERY keyboard press hands the UI back to the keyboard, before any branch below consumes the key.
 			 * Several branches (Q/E, Esc, Backspace, the dance/Return pause tap, the F keys) continue or return before
 			 * p5d_key_event's own device switch, so pressing such a key while a pad drove the game changed the controls
-			 * but left the on-screen glyphs on the pad's art (reported 2026-11-22: the icons did not follow the keyboard).
-			 * device_keyboard is a no-op when the keyboard already drives the UI. */
-			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) device_keyboard();
+			 * but left the on-screen glyphs on the pad's art (reported 2026-11-22: "the icons do not follow the
+			 * keyboard"). device_keyboard is a no-op when the keyboard already drives the UI. */
+			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) device_keyboard(SDL_GetKeyName(e.key.key));
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F12) { extern void gfxcap_request(void); gfxcap_request(); fprintf(stderr, "capture requested (F12)\n"); }
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F11) { p5d_load(); continue; }   /* input.ini: reload the PC key map */
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F3) { p5d_qe_mode_cycle(); continue; }   /* Q/E mapping: auto / L-R / D-pad (works in the minimal build too) */
@@ -3389,6 +3915,15 @@ void window_run(void *(*fn)(void *), void *arg) {
 				overlay_toast_titled("Auto play", p5d_autoplay_enabled ? "ON  (F5 toggles)" : "OFF  (F5 toggles)", 1.0);
 				p5d_banner_show(p5d_autoplay_enabled, 1.0);   /* the P5-style notification box (port overlay), 1 s */
 			}
+#ifdef RECOMP_MINIMAL
+			/* M1669: F6 = unlock every COMMUNITY event in memory (the minimal build compiles the debug-key block below out) */
+			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F6) {
+				extern int p5d_commu_cheat; p5d_commu_cheat = 1;
+				p5d_commu_mem_unlock();
+				p5d_banner_show_commu(1.0);
+				overlay_toast_titled("COMMUNITY", "All events unlocked (memory only)", 2.0);
+			}
+#endif
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F12) {   /* the old F5 marker: a log/frame-history mark for bug reports */
 				static int n; n++; extern uint64_t display_frames(void);
 				fprintf(stderr, "user mark %d at frame %llu\n", n, (unsigned long long)display_frames());
@@ -3397,8 +3932,9 @@ void window_run(void *(*fn)(void *), void *arg) {
 			}   /* menu vs dance key map */
 #ifndef RECOMP_MINIMAL
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F1) metrics_osd_cycle();
-			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F6) {   /* a VERIFY build's 60/30 A/B capture (verify.c sets window_f6) */
-				if (window_f6) window_f6(); else fprintf(stderr, "F6: the A/B capture needs the verify build (vitarecomp build <title> verify)\n");
+			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F6) {   /* M1669: COMMUNITY unlock (memory); a VERIFY build's F6 A/B capture keeps precedence */
+				if (window_f6) window_f6();
+				else { p5d_commu_mem_unlock(); overlay_toast_titled("COMMUNITY", "All events unlocked (memory only)", 2.0); }
 			}
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F9) {   /* a VERIFY build's hand-held count window (verify.c sets window_f9) */
 				if (window_f9) window_f9(); else fprintf(stderr, "F9: count windows need the verify build (vitarecomp build <title> verify)\n");
@@ -3429,19 +3965,104 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 				}
 				continue;
 			}
+			/* M1658: the event-field room's Esc is the pause menu: tap START and mark the pause (the screen model does not always
+			 * classify the room; without this Esc fell through to a Cross that did nothing) */
+			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE && window_in_event_field() && !p5d_pause_latch) {
+				p5d_pause_latch = 1; p5d_pause_sub = 0; p5d_pause_seen = 0; p5d_pause_us = now_us(); p5d_pause_pic_us = 0; p5d_pause_page_seen = 0; p5d_pause_close_us = 0; p5d_pause_close_tried = 0;
+				menu_tap(START); menu_win_until = now_us() + 30000000;
+				p5d_scene_push(P5D_SCENE_PAUSE, "ESC pause (event field)");
+				fprintf(stderr, "[PAUSE] esc -> pause (event field)\n");
+				continue;
+			}
 			/* ESC decided by the CODE-LEVEL screen (M1523): each screen gets its own meaning from the job list */
-			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE && p5d_saw_menu) {
+			/* M1694: back to the code-level Esc decision that worked (M1523), with the one real fix: the pause latch
+			 * is dropped the moment Esc sends the closing Cross, so the next Esc opens the pause again instead of
+			 * being spent on a page that is already gone. */
+			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) {
 				int scr = p5d_scr_now;
+				/* a CONFIG classification without an intent is stale: the config job is preloaded (it turned a COMMU
+				 * story into "settings back" = Cross clicks, which advanced the dialogue) */
+				/* M1696: in a story/COMMU flow Esc ALWAYS opens the pause, whatever the screen classifier says: the
+				 * preloaded config/pause jobs made CONFIG/PAUSE classifications linger there, and every such stray
+				 * classification turned the press into Cross (the dialogue advanced). Only a pause we opened ourselves
+				 * (p5d_pause_latch) counts as "paused". */
+				{ static int es = -1; if (es < 0) { const char *e = getenv("RECOMP_ESC_TEST_STORY"); es = e && atoi(e) != 0; }
+				  if (!p5d_pause_latch &&
+				    (es || p5d_story_latch || (p5d_story_us && now_us() - p5d_story_us < 3000000) || p5d_commu_mode ||
+				     p5d_scene == P5D_SCENE_COMMU || p5d_profile == P5D_COMMU ||
+				     (p5d_commu_job_us && now_us() - p5d_commu_job_us < 3000000) || window_in_event_field())) {
+					p5d_config_latch = 0; p5d_config_from_pause = 0; p5d_main_settings = 0;
+					p5d_pause_latch = 1; p5d_pause_sub = 0; p5d_pause_seen = 0; p5d_pause_us = now_us(); p5d_pause_pic_us = 0; p5d_pause_page_seen = 0;
+					p5d_pause_close_us = 0; p5d_pause_close_tried = 0;
+					p5d_chord(START, 400)   /* M1699: a 400 ms hold cannot be missed by the game's input sampling */; menu_win_until = now_us() + 30000000;   /* M1697: a real press length, not a 45 ms tap */ p5d_esc_open_first_us = now_us(); p5d_esc_open_retries = 0; p5d_esc_close_first_us = 0; p5d_esc_close_retries = 0; p5d_wheel_reset = 1; p5d_wheel_last_us = 0;
+					p5d_scene_push(P5D_SCENE_PAUSE, "ESC pause (story context)");
+					fprintf(stderr, "[PAUSE] esc -> open the pause (story/COMMU context)\n");
+					continue;
+				  } }
+				if (scr == P5D_SCR_CONFIG && !p5d_pause_latch && !p5d_config_latch) {
+					p5d_config_latch = 0; p5d_config_from_pause = 0; p5d_main_settings = 0;
+					scr = P5D_SCR_STORY;
+				}
+				/* M1710: the pause page raises the config latch too (its own page is the config app). PAUSE wins: one
+				 * Cross closes it. Only a CONFIG page that is NOT the pause (the main menu's CONFIG row) uses the
+				 * Cross/Cross/Circle exit -- that sequence's extra Circle was landing in the resumed game/dialogue. */
+				int page_cfg = p5d_page_cfg_probe();   /* M1713: the live job list at the moment of the press (pure code) */
+				int stage_flow = p5d_dance_latch || (p5d_dance_bar_us && now_us() - p5d_dance_bar_us < 3000000) ||
+				                 p5d_story_latch || (p5d_story_us && now_us() - p5d_story_us < 3000000) ||
+				                 p5d_commu_mode || p5d_scene == P5D_SCENE_DANCE || p5d_scene == P5D_SCENE_COMMU ||
+				                 window_in_event_field();
+				if (p5d_page_kind == P5D_PAGE_PAUSE_SUB) {   /* M1725: pause SUBPAGE -- one back Cross, the pause stays */
+					menu_tap(CROSS); menu_win_until = now_us() + 30000000;
+					fprintf(stderr, "[PAGE] esc -> subpage back (one Cross, pause stays)\n");
+					continue;
+				}
+				if (p5d_pause_latch && (p5d_page_kind == P5D_PAGE_PAUSE_SUB || p5d_pause_sub > 0)) {   /* M1730: page evidence, not a counter */
+					p5d_settings_back_request();
+					fprintf(stderr, "[PAUSE] esc back on a pause subpage (settings-back, page=%s) -- pause stays\n", p5d_page_name);
+					continue;
+				}
+				if (p5d_page_kind == P5D_PAGE_PAUSE && p5d_pause_latch) {   /* M1725: pause MAIN page -- one Cross exits it */
+					p5d_pause_close_request();
+					p5d_pause_latch = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; p5d_pause_sub = 0;
+					fprintf(stderr, "[PAGE] esc -> pause main close (one Cross)\n");
+					continue;
+				}
+				if (page_cfg && stage_flow) {
+					p5d_pause_close_request(); p5d_pause_latch = 0; p5d_config_latch = 0; p5d_config_from_pause = 0; p5d_pause_sub = 0;
+					fprintf(stderr, "[EV] esc -> pause close (config page job present, one Cross)\n");
+					continue;
+				}
+				if (page_cfg && !stage_flow && p5d_main_settings) {
+					p5d_settings_back_request();
+					fprintf(stderr, "[EV] esc -> settings back (main menu CONFIG page)\n");
+					continue;
+				}
+				if (page_cfg) {   /* some other config page (no intent): leave it alone */
+					p5d_settings_back_request();
+					continue;
+				}
+				if (p5d_pause_latch) {   /* fallback: our latch when the page job is not visible */
+					p5d_pause_close_request();
+					p5d_pause_latch = 0; p5d_config_latch = 0; p5d_config_from_pause = 0;
+					p5d_pause_closed_us = now_us(); p5d_config_ignore_us = now_us() + 1200000;
+					fprintf(stderr, "[EV] esc -> pause close (one Cross, latch dropped)\n");
+					continue;
+				}
 				if (scr == P5D_SCR_CONFIG) {
 					p5d_settings_back_request();
 					fprintf(stderr, "[EV] esc -> settings back (Cross/Cross/Circle)\n");
 					continue;
 				}
-				if (scr == P5D_SCR_PAUSE) { p5d_pause_close_request(); fprintf(stderr, "[EV] esc -> pause close (one Cross)\n"); continue; }
-				if (scr == P5D_SCR_DANCE || scr == P5D_SCR_STORY) {
-					fprintf(stderr, "[PAUSE] esc -> open the pause (screen=%s)\n", p5d_input_screen_name(scr));
-					p5d_pause_latch = 1; p5d_pause_us = now_us(); p5d_pause_pic_us = now_us(); p5d_pause_close_us = 0; p5d_pause_close_tried = 0; p5d_scene_push(P5D_SCENE_PAUSE, "ESC pause"); p5d_scene_lock = 0; menu_tap(START);
-					menu_win_until = now_us() + 30000000;
+				if (p5d_page_kind == P5D_PAGE_DANCE || p5d_story_latch || (p5d_story_us && now_us() - p5d_story_us < 3000000) ||
+				    p5d_dance_latch || (p5d_dance_bar_us && now_us() - p5d_dance_bar_us < 3000000) ||
+				    p5d_commu_mode || p5d_app_state_code() == 3 || p5d_profile == P5D_COMMU ||
+				    p5d_scene == P5D_SCENE_COMMU || (p5d_commu_job_us && now_us() - p5d_commu_job_us < 3000000) ||
+				    window_in_event_field() || scr == P5D_SCR_DANCE || scr == P5D_SCR_STORY) {
+					p5d_pause_latch = 1; p5d_pause_sub = 0; p5d_pause_seen = 0; p5d_pause_us = now_us(); p5d_pause_pic_us = 0; p5d_pause_page_seen = 0;
+					p5d_pause_close_us = 0; p5d_pause_close_tried = 0;
+					p5d_chord(START, 400)   /* M1699: a 400 ms hold cannot be missed by the game's input sampling */; menu_win_until = now_us() + 30000000;   /* M1697: a real press length */ p5d_esc_open_first_us = now_us(); p5d_esc_open_retries = 0; p5d_esc_close_first_us = 0; p5d_esc_close_retries = 0; p5d_wheel_reset = 1; p5d_wheel_last_us = 0;
+					p5d_scene_push(P5D_SCENE_PAUSE, "ESC pause");
+					fprintf(stderr, "[PAUSE] esc -> open the pause\n");
 					continue;
 				}
 				if (scr == P5D_SCR_MAIN || scr == P5D_SCR_SONG || scr == P5D_SCR_COMMU || scr == P5D_SCR_RESULT || scr == P5D_SCR_TITLE) {
@@ -3450,16 +4071,36 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 					menu_tap(CROSS); menu_win_until = now_us() + 30000000;
 					continue;
 				}
-			}
-			/* M1523: the picture-driven ESC fallback is removed -- the code-level screen above covers every screen.
-			 * An unknown screen gets the back key, which cannot open anything. */
-			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) {
 				menu_tap(CROSS); menu_win_until = now_us() + 30000000;
 				fprintf(stderr, "[EV] esc -> back (unknown screen fallback)\n");
 				continue;
 			}
+			/* M1523: the picture-driven ESC fallback is removed -- the code-level screen above covers every screen.
+			 * An unknown screen gets the back key, which cannot open anything. */
+			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) {
+				/* M1688: in the gameplay/story/event flows Esc is the START button itself. The code-level decision above
+				 * skips those flows on purpose, so Esc arrives HERE -- it must tap START (the game's own pause toggle),
+				 * not Cross (that was the "Esc does nothing" bug: the fallback sent back, which cannot open a pause). */
+				/* M1691: the KEY MAP already implements the whole pause toggle exactly like the gamepad: the GAME and
+				 * COMMU maps bind start = Escape (START opens the pause), the CONFIG map (the pause page) binds cross =
+				 * Escape (one Cross closes it). Esc must therefore NOT be consumed here -- it falls through to the key
+				 * dispatch, which reports to the game the very same START/Cross a pad press would. Consuming it here was
+				 * the bug: this fallback sent Cross, and in a dialogue Cross is "advance the text". */
+				if (p5d_story_latch || p5d_dance_latch || p5d_dance_flow(now_us()) || p5d_commu_mode ||
+				    p5d_app_state_code() == 3 || p5d_profile == P5D_COMMU || p5d_scene == P5D_SCENE_COMMU ||
+				    (p5d_commu_job_us && now_us() - p5d_commu_job_us < 2000000) ||
+				    window_in_event_field() || p5d_profile == P5D_GAME || p5d_profile == P5D_CONFIG) {
+					fprintf(stderr, "[EV] esc -> key map (START in GAME/COMMU maps, Cross on the pause page)\n");
+					/* no continue: the key dispatch below feeds START/Cross to the game, as the pad would */
+				} else {
+					menu_tap(CROSS); menu_win_until = now_us() + 30000000;
+					fprintf(stderr, "[EV] esc -> back (unknown screen fallback)\n");
+					continue;
+				}
+			}
 			if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_RETURN && !p5d_pause_latch && (p5d_dance_latch || p5d_story_latch || p5d_commu_mode)) {
-				p5d_pause_latch = 1; p5d_pause_us = now_us(); p5d_pause_pic_us = now_us(); p5d_pause_close_us = 0; p5d_pause_close_tried = 0; menu_tap(START); menu_win_until = now_us() + 30000000;   /* Return is START too in the dance map */
+				p5d_esc_pause_state = 1;
+				p5d_pause_latch = 1; p5d_pause_sub = 0; p5d_pause_seen = 0; p5d_pause_us = now_us(); p5d_pause_pic_us = 0; p5d_pause_page_seen = 0; p5d_pause_close_us = 0; p5d_pause_close_tried = 0; menu_tap(START); menu_win_until = now_us() + 30000000;   /* Return is START too in the dance map */
 				continue;
 			}
 			/* Q/E for the two navigation contexts, decided only by the main-menu row that opened them (no pixel model):
@@ -3556,6 +4197,11 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 			if (!p5d_pad_allowed() && (e.type == SDL_EVENT_GAMEPAD_ADDED || e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
 			    e.type == SDL_EVENT_GAMEPAD_BUTTON_UP || e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION)) continue;
 			if (e.type == SDL_EVENT_GAMEPAD_ADDED && !pad && (pad = SDL_OpenGamepad(e.gdevice.which)) != 0) {
+				{ SDL_GamepadType gt = SDL_GetGamepadType(pad);
+				  p5d_pad_ps = (gt == SDL_GAMEPAD_TYPE_PS3 || gt == SDL_GAMEPAD_TYPE_PS4 || gt == SDL_GAMEPAD_TYPE_PS5);
+				  p5d_pad_ns = (gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO || gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT ||
+				                gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT || gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR);
+				  fprintf(stderr, "gamepad: type %d -> %s UI\n", (int)gt, p5d_pad_ps ? "PS (original glyphs)" : p5d_pad_ns ? "NS (Switch badges)" : "Xbox"); }
 				__atomic_store_n(&pad_connected, 1, __ATOMIC_RELAXED);
 				/* a DS4/DualSense's gyroscope and accelerometer stream only once asked for (SDL's HIDAPI driver) */
 				int g = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
@@ -3563,36 +4209,29 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 				pad_gyro = g && a;
 				fprintf(stderr, "gamepad: %s%s%s\n", SDL_GetGamepadName(pad) ? SDL_GetGamepadName(pad) : "?", SDL_GetNumGamepadTouchpads(pad) > 0 ? ", touchpad" : "", pad_gyro ? ", gyro" : "");
 			}
-			if (e.type == SDL_EVENT_GAMEPAD_REMOVED && pad && SDL_GetGamepadID(pad) == e.gdevice.which) { SDL_CloseGamepad(pad); pad = 0; __atomic_store_n(&pad_connected, 0, __ATOMIC_RELAXED); pad_gyro = 0; motion_lost(); gamepad_touch_release(); buttons = 0; for (int i = 0; i < 4; i++) sticks[i] = 128; }
+			if (e.type == SDL_EVENT_GAMEPAD_REMOVED && pad && SDL_GetGamepadID(pad) == e.gdevice.which) { SDL_CloseGamepad(pad); pad = 0; p5d_pad_ps = 0; p5d_pad_ns = 0; __atomic_store_n(&pad_connected, 0, __ATOMIC_RELAXED); pad_gyro = 0; motion_lost(); gamepad_touch_release(); buttons = 0; for (int i = 0; i < 4; i++) sticks[i] = 128; }
 			if (e.type == SDL_EVENT_GAMEPAD_SENSOR_UPDATE) {
 				if (e.gsensor.sensor == SDL_SENSOR_ACCEL) motion_feed_accel(e.gsensor.data, e.gsensor.sensor_timestamp);
 				else if (e.gsensor.sensor == SDL_SENSOR_GYRO) motion_feed_gyro(e.gsensor.data, e.gsensor.sensor_timestamp);
 			}
-			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) device_gamepad();
+			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && (e.gaxis.value > 8000 || e.gaxis.value < -8000))) device_gamepad(e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? "pad button" : "pad axis");
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_UP) { static int plog = -1; if (plog < 0) plog = getenv("RECOMP_PAD_LOG") ? 1 : 0; if (plog) fprintf(stderr, "    pad: button %d %s (id %u)\n", e.gbutton.button, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? "down" : "up", (unsigned)e.gbutton.which); }
 			if (e.type == SDL_EVENT_GAMEPAD_ADDED) { fprintf(stderr, "gamepad added: %s\n", SDL_GetGamepadNameForID(e.gdevice.which) ? SDL_GetGamepadNameForID(e.gdevice.which) : "?"); }
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && (e.gaxis.value > 16000 || e.gaxis.value < -16000))) {
 				kbm_auto = 0; snprintf(kbm_why, sizeof kbm_why, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? "pad button %d" : "pad axis %d", e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e.gbutton.button : e.gaxis.axis);
 			}   /* the pad in hand: auto's choice */
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) motion_recenter();   /* R3 (the Vita has no stick clicks): the gyro's heading becomes straight ahead */
-			/* M1778: the pad's own START opens/closes the COLLECTION watch mode (the game gets START itself), but our
-			 * running flag was only updated by the keyboard Enter path. After a pad-driven visit the keyboard's WASD/
-			 * arrow watch keys and the on-screen keycaps stayed in the menu mapping while the game really was in the
-			 * watch mode -- switching pad <-> keyboard in the character viewer scrambled the key and glyph mappings
-			 * (reported 2026-11-22). Keep the flag in step here; the pad's back leaves the watch mode the same way (the
-			 * game closes it). Deliberately NO depth bookkeeping here: counting pad confirms fought the job-evidence
-			 * repairs and made the 2026-11-22 build worse. */
-			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && p5d_collection_active()) {
-				if (e.gbutton.button == SDL_GAMEPAD_BUTTON_START && p5d_collection_depth >= 3) {
-					p5d_collection_watching = !p5d_collection_watching;
-					fprintf(stderr, "[KEY] pad START -> collection watch %s\n", p5d_collection_watching ? "on" : "off");
-				} else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST && p5d_collection_watching) {
-					p5d_collection_watching = 0;
-					fprintf(stderr, "[KEY] pad back -> collection watch off\n");
-				}
-			}
+			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_STICK) pad_rumble_once(pad);   /* M1659: a rumble self-test on R3 */
 			if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
 				int dn = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN, b = e.gbutton.button;
+				/* M1656e: the pad's Menu/Start opens the game's pause by itself; mark the pause here (the keyboard Esc/Return
+				 * path does the same) so the pause's A=confirm/B=back swap and the screen classification apply to it too */
+				if (dn && b == SDL_GAMEPAD_BUTTON_START && !p5d_pause_latch && !p5d_config_latch &&
+				    (p5d_dance_latch || p5d_story_latch || p5d_commu_mode)) {
+					p5d_pause_latch = 1; p5d_pause_sub = 0; p5d_pause_seen = 0; p5d_pause_us = now_us(); p5d_pause_pic_us = 0; p5d_pause_page_seen = 0; p5d_pause_close_us = 0; p5d_pause_close_tried = 0;
+					p5d_scene_push(P5D_SCENE_PAUSE, "pad Menu pause"); p5d_scene_lock = 0;
+					fprintf(stderr, "[PAUSE] pad Menu -> pause marked (screen=%s)\n", p5d_input_screen_name(p5d_scr_now));
+				}
 				if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
 					const int k = b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
 					if (shoulders_swapped) pad_main(pad, k, dn); else pad_second(pad, k, dn);
@@ -3602,6 +4241,23 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 					if (!dn) buttons &= ~CROSS;            /* (a Cross pressed before the bumper, let go after) */
 				} else if (dn) buttons |= pad_bit(b);
 				else buttons &= ~pad_bit(b);
+				/* M1778: the pad's own Start opens/closes the COLLECTION watch mode (the game gets Start itself), but our
+				 * running flag was only updated by the keyboard Enter path. So after a pad-driven visit the keyboard's
+				 * WASD/arrow watch keys and the on-screen keycaps stayed in the menu mapping while the game really was in
+				 * the watch mode -- switching pad <-> keyboard in the character viewer scrambled the key and glyph
+				 * mappings (reported 2026-11-22). Keep the flag in step here; the pad's back leaves the watch mode the same
+				 * way (the game closes it). Deliberately NO depth bookkeeping here: the game's own CostumeList/modeler jobs
+				 * already repair the depth (M1655), and counting pad confirms fought those repairs (the 2026-11-22 build). */
+				if (dn && p5d_collection_active()) {
+					int viewer = p5d_collection_depth >= 3 || p5d_costume_job_fresh() || p5d_modeler_job_fresh();
+					if (b == SDL_GAMEPAD_BUTTON_START && viewer) {
+						p5d_collection_watching = !p5d_collection_watching;
+						fprintf(stderr, "[KEY] pad START -> collection watch %s\n", p5d_collection_watching ? "on" : "off");
+					} else if (b == SDL_GAMEPAD_BUTTON_EAST && p5d_collection_watching) {
+						p5d_collection_watching = 0;
+						fprintf(stderr, "[KEY] pad back -> collection watch off\n");
+					}
+				}
 			}
 			if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && (e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e.gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)) {
 				/* a trigger is pressed past ~37%, released under ~24% (no chatter at the edge) */
@@ -3675,7 +4331,7 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 			int tx, ty;
 			if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT && mouse_to_touch(e.button.x, e.button.y, 0, &tx, &ty)) { touch_x = tx; touch_y = ty; touch_down = 1; }   /* (a click on the bars touches nothing) */
 			if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT) touch_down = 0;
-			if (!p5d_pad_allowed() && e.type == SDL_EVENT_MOUSE_MOTION && p5d_mouse_on && !touch_down && !cur_mode && p5d_saw_menu) {
+			if (e.type == SDL_EVENT_MOUSE_MOTION && p5d_mouse_on && !touch_down && !cur_mode && p5d_saw_menu) {
 				int tx, ty;
 				if (mouse_to_touch(e.motion.x, e.motion.y, 0, &tx, &ty)) {
 					int px = tx / 2, py = ty / 2;
@@ -3689,6 +4345,12 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 					}
 				}
 			}
+			if (e.type == SDL_EVENT_MOUSE_WHEEL) {   /* M1723 diagnostic: why may the wheel be skipped? */
+				static int wl = -1; if (wl < 0) { const char *e2 = getenv("RECOMP_WHEELLOG"); wl = e2 ? atoi(e2) != 0 : 1; }
+				if (wl) fprintf(stderr, "[WHEELCHK] scr=%s(%d) lat=%d cfg=%d prof=%d cur_mode=%d touch=%d collect=%d\n",
+				                p5d_input_screen_name(p5d_scr_now), (int)p5d_scr_now, p5d_pause_latch, p5d_config_latch,
+				                (int)p5d_profile, (int)cur_mode, (int)touch_down, (int)p5d_collection_active());
+			}
 			if (e.type == SDL_EVENT_MOUSE_WHEEL && p5d_collection_active() && p5d_collection_watching) {
 				static float watch_wheel_acc;
 				watch_wheel_acc += e.wheel.y;
@@ -3701,11 +4363,15 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 			if (e.type == SDL_EVENT_MOUSE_WHEEL && !cur_mode &&
 			    (p5d_scr_now == P5D_SCR_MAIN || p5d_scr_now == P5D_SCR_SONG || p5d_scr_now == P5D_SCR_COMMU ||
 			     p5d_scr_now == P5D_SCR_RESULT || p5d_scr_now == P5D_SCR_PAUSE || p5d_scr_now == P5D_SCR_CONFIG ||
-			     p5d_scr_now == P5D_SCR_TITLE || p5d_scr_now == P5D_SCR_STORY)) {
+			     p5d_scr_now == P5D_SCR_TITLE || p5d_scr_now == P5D_SCR_STORY ||
+			     p5d_pause_latch || p5d_config_latch || p5d_profile == P5D_CONFIG)) {   /* M1726: the pause/settings pages keep the wheel live even when the picture classifier flickers */
 				/* one wheel notch = one of the game's own list steps; the click confirms. (Steering the
 				 * highlight continuously was unreliable on the moving 3D list, so the interaction uses
 				 * the game's native steps, driven by the PC wheel.) */
-				static float wheel_acc;
+				if (p5d_wheel_reset) { p5d_wheel_acc = 0; p5d_wheel_reset = 0; }
+				{ uint64_t wn = now_us();
+				  if (p5d_wheel_last_us && wn - p5d_wheel_last_us < 25000) { p5d_wheel_acc = 0; p5d_wheel_last_us = wn; continue; }
+				  p5d_wheel_last_us = wn; }
 				if (p5d_ui == P5D_UI_RESULT) {
 					/* the result menu's 4 rows: up/down notch = one step of its selection */
 					if (e.wheel.y >= 1.f || e.wheel.y <= -1.f) {
@@ -3715,14 +4381,14 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 						fprintf(stderr, "[UI] wheel %s (result row %d)\n", dir > 0 ? "UP" : "DOWN", p5d_ui_cur);
 					}
 				} else {
-				wheel_acc += e.wheel.y;
+				p5d_wheel_acc += e.wheel.y;
 				int acted = 0, on_tabs = 0;
 				{	/* the difficulty tabs are the top strip (the game's hint: d-pad changes the difficulty) */
 					float mx = 0, my = 0; SDL_GetMouseState(&mx, &my);
 					int tx, ty; if (mouse_to_touch(mx, my, 0, &tx, &ty) && (p5d_song_mode || p5d_scene == P5D_SCENE_SONG) && ty / 2 < 70) on_tabs = 1;
 				}
-				while (wheel_acc >= 1.f) { menu_tap(on_tabs ? LEFT : UP); if (!on_tabs) p5d_nav_step(-1); wheel_acc -= 1.f; acted = 1; }
-				while (wheel_acc <= -1.f) { menu_tap(on_tabs ? RIGHT : DOWN); if (!on_tabs) p5d_nav_step(+1); wheel_acc += 1.f; acted = -1; }
+				while (p5d_wheel_acc >= 1.f) { menu_tap(on_tabs ? LEFT : UP); if (!on_tabs) p5d_nav_step(-1); p5d_wheel_acc -= 1.f; acted = 1; }
+				while (p5d_wheel_acc <= -1.f) { menu_tap(on_tabs ? RIGHT : DOWN); if (!on_tabs) p5d_nav_step(+1); p5d_wheel_acc += 1.f; acted = -1; }
 				if (acted) { menu_win_until = now_us() + 30000000; fprintf(stderr, "[UI] wheel %s (%s, screen %s, row %d/%d)\n", acted > 0 ? "UP" : "DOWN", on_tabs ? "difficulty" : "list", p5d_input_screen_name(p5d_scr_now), p5d_nav_row, p5d_nav_rows); }
 				}
 			}
@@ -3734,6 +4400,7 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 			if (e.type == SDL_EVENT_MOUSE_MOTION && mouse_rear_down && mouse_to_touch(e.motion.x, e.motion.y, 1, &tx, &ty)) { mouse_rear_x = tx; mouse_rear_y = clampi(ty, REAR_Y0, REAR_Y1); }
 			if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && e.gaxis.axis < 4)
 				sticks[e.gaxis.axis] = (uint8_t)((e.gaxis.value + 32768) >> 8);
+
 		}
 		{	/* keyboard + mouse, once a loop: which scheme, the capture, WASD as the left stick, the look's stand-in */
 			static uint64_t last; uint64_t t = now_us(); double dt = last ? (t - last) / 1e6 : 0; last = t;
@@ -3750,6 +4417,10 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 			int want = 0;   /* the player's build: the pointer stays visible and free (clicks are the game's) */
 #ifndef RECOMP_MINIMAL
 			want = (on || (window_raw_look() && !pstv)) && settings_int("mouse_look", 1) && !overlay_is_open() && !overlay_dialog_active() && win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) && !(SDL_GetModState() & SDL_KMOD_ALT);
+			/* M1658b: in the event-field room the mouse is the camera, so capture it even when the auto input choice says "pad"
+			 * (the pointer left the window and the look stopped); release for the pause/settings pages so their menus are usable. */
+			if (window_in_event_field() && window_uses_keyboard() && !p5d_pause_latch && !p5d_config_latch && !overlay_is_open() && !overlay_dialog_active() &&
+			    win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) && !(SDL_GetModState() & SDL_KMOD_ALT)) want = 1;
 #endif
 			/* SDL's own state, not just ours: the system can drop the capture behind our back (a focus change as
 			 * the window opens, say) and rel_on then claimed a capture that wasn't there -- the pointer showed,
@@ -3772,6 +4443,20 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 						!!(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN), gx, gy, wx, wy, px, py, ww, wh,
 						__atomic_load_n(&mouse_dx_q8, __ATOMIC_RELAXED) / 256, __atomic_load_n(&mouse_dy_q8, __ATOMIC_RELAXED) / 256);
 				}
+			}
+			/* M1658c: the event-field room captures the pointer no matter what the auto input choice computed (the mouse is the
+			 * camera there); the pause/settings pages release it again (their condition is in the want computation). Also logs
+			 * the capture state once a second under RECOMP_FIELD_LOG=1, so a "the pointer still leaves the window" report has
+			 * evidence. */
+			{
+				int fld = window_in_event_field() && window_uses_keyboard() && !p5d_pause_latch && !p5d_config_latch &&
+				          !overlay_is_open() && !overlay_dialog_active() && win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) &&
+				          !(SDL_GetModState() & SDL_KMOD_ALT);
+				if (fld) want = 1;
+				{ static int fl = -1; if (fl < 0) fl = getenv("RECOMP_FIELD_LOG") ? 1 : 0;
+				  static uint64_t last; uint64_t tt = now_us();
+				  if (fl && tt - last > 1000000) { last = tt;
+				    fprintf(stderr, "[FIELD] active=%d want=%d rel_on=%d sdl_rel=%d on=%d\n", fld, want, rel_on, win ? SDL_GetWindowRelativeMouseMode(win) : -1, on); } }
 			}
 			if (want != rel_on && win) {
 				if (!SDL_SetWindowRelativeMouseMode(win, want) && want) fprintf(stderr, "mouse: capture refused: %s\n", SDL_GetError());
@@ -3934,6 +4619,35 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 				}
 			}
 		}
+		/* M1659b: the dance stage's scratch (a stick push) rumbles the pad. Sampled once a frame instead of on axis events: an
+		 * event only comes when the value changes, so a push that started below a threshold or between events was missed
+		 * ("sometimes pushing the left stick doesn't vibrate"). Rising edge from near rest to pushed; throttled so one push
+		 * is one burst while a shove held over is silent after it. */
+		{
+			/* M1659e: the game's scratch is a stick PUSH in any direction (the author: pushing either stick any way triggers the
+			 * scratch). Detect each push: from near rest past ~55%, or a fast increase of the deflection in one frame (a flick
+			 * that starts from an already-deflected stick -- a second scratch without returning to the centre). One push, one
+			 * burst; a stick held over does not repeat, and the keyboard/mouse never rumble. */
+			static float pm[2]; static uint64_t last_rumble;
+			int pushed = -1;
+			for (int st = 0; st < 2; st++) {
+				float ax = pad ? SDL_GetGamepadAxis(pad, st ? SDL_GAMEPAD_AXIS_RIGHTX : SDL_GAMEPAD_AXIS_LEFTX) / 32767.f : 0.f;
+				float ay = pad ? SDL_GetGamepadAxis(pad, st ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY) / 32767.f : 0.f;
+				float m = sqrtf(ax * ax + ay * ay);
+				int edge = (m > 0.55f && pm[st] < 0.42f) || (m - pm[st] > 0.30f && m > 0.45f);
+				if (edge && pushed < 0) pushed = st;
+				pm[st] = m;
+			}
+			/* M1659f: only the chart rumbles. The dance profile (P5D_GAME) is also active in the story/event-field scenes and
+			 * in the exploration room, which made a plain stick push rumble there; the chart's own song gauge on screen is the
+			 * reliable "this is the dance play area" signal (and the event-field room is excluded explicitly). */
+			int chart_now = p5d_dance_bar_us && now_us() - p5d_dance_bar_us < 600000;
+			if (pushed >= 0 && chart_now && !window_in_event_field() && !overlay_is_open() && !p5d_pause_latch &&
+			    now_us() - last_rumble > 220000) {
+				last_rumble = now_us(); pad_rumble_once(pad);
+				fprintf(stderr, "[RUMBLE] scratch push (stick %d)\n", pushed + 1);
+			}
+		}
 		{	/* the menu just closed (any way: F10, Escape, a pad combo, its Resume button): the sticks moved
 			 * while it had the events -- a stick let go with the menu up would otherwise stay deflected */
 			static int was_open; int open = overlay_is_open() || overlay_dialog_active();   /* (the save dialog too) */
@@ -3950,6 +4664,30 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 
 
 		if (!gpu) { SDL_Delay(1); continue; }
+		if (metrics_osd_level() > 0) {   /* M1653: the OSD's measured display rate */
+			static int disp_started;
+			if (!disp_started) {
+				disp_started = 1;
+#ifdef _WIN32
+				SDL_PropertiesID wprops = SDL_GetWindowProperties(win);
+				void *whwnd = SDL_GetPointerProperty(wprops, "SDL.window.win32.hwnd", nullptr);
+				dispcap_start(whwnd);
+#else
+				dispcap_start(nullptr);
+#endif
+			}
+		}
+		/* M1646: AI frame interpolation mode (the launcher's frame-generation panel sets RECOMP_FG_PRESENT). The driver's
+		 * interpolator fills display frames by inferring pictures between rendered ones, so it can only work from frames it
+		 * actually receives: this loop repeats the same picture while the game has not flipped (60 presents/s for a 30 fps
+		 * game), leaving nothing to interpolate - a 30 fps setting looked unchanged with Smooth Motion on. This mode presents
+		 * only when there is a fresh game frame (30 fps setting -> 30 real frames/s, 60 -> 60), so the driver can insert its
+		 * frames between them. The overlay keeps its 60 Hz presents (its animations and the pause menu need them): the mode
+		 * only applies while nothing is paused. */
+		if (fg_present_now() && !overlay_is_open() && !overlay_dialog_active() && !overlay_game_paused()) {
+			int fresh = __atomic_load_n(&gnew, __ATOMIC_ACQUIRE) || __atomic_load_n(&new_frame, __ATOMIC_ACQUIRE);
+			if (!fresh) { SDL_DelayPrecise(250000); continue; }
+		}
 		if (overlay_game_paused()) { extern void gfx_shader_prep_tick(void); gfx_shader_prep_tick(); }   /* (a paused game doesn't present: the shader warm-up steps on from here, its prep card's too) */
 		if (self_paced) {   /* no vsync wait paces this loop: a present once the game has a new frame, else once a refresh (menus, the overlay); spinning presented ~1200 times a second and slowed the game */
 			/* the games run on the Vita's fixed 60 Hz grid: pace the present loop to 60, not to a 120/144 Hz panel's
@@ -4016,7 +4754,7 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 			 * `frame` itself (the software path's next guest-memory read overwrites it fresh
 			 * anyway) and nowhere near guest memory, so RECOMP_SHOT (read straight from guest
 			 * memory, elsewhere) never sees it */
-			if (dst) { memcpy(dst, frame, 4 * pw * ph); if (!(overlay_draws_hud() && !osd_cpu())) metrics_osd_composite((uint8_t *)dst, pw, pw, ph); SDL_UnmapGPUTransferBuffer(gpu, xfer); up_xfer = xfer; }   /* (the ImGui HUD draws the overlay below otherwise) */
+			if (dst) { memcpy(dst, frame, 4 * pw * ph); apply_vibrance((uint8_t *)dst, (int)pw, (int)ph); if (!(overlay_draws_hud() && !osd_cpu())) metrics_osd_composite((uint8_t *)dst, pw, pw, ph); SDL_UnmapGPUTransferBuffer(gpu, xfer); up_xfer = xfer; }   /* (the ImGui HUD draws the overlay below otherwise) */
 			new_frame = 0;
 		}
 		pthread_mutex_unlock(&lock);
@@ -4112,4 +4850,12 @@ if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_F8) raw_l
 		if (metrics_title(title, sizeof title)) SDL_SetWindowTitle(win, title);
 #endif
 	}
+}
+
+/* M1668: see p5d_chart_active's comment: the autoplay cheat needs a signal that is true for the whole song, not the per-frame
+ * gauge picture. The dance latch covers the song; the ready/select screens, the pause and the config page are excluded. */
+int p5d_autoplay_stage(void) {
+	if (!p5d_dance_latch || p5d_pause_latch || p5d_config_latch) return 0;
+	if (p5d_ready_job_us && now_us() - p5d_ready_job_us < 800000) return 0;
+	return 1;
 }

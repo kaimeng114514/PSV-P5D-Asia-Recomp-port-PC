@@ -126,6 +126,10 @@ static void addcont_marker(const char *gp, const char *hp) {
 		p += l;
 	}
 }
+/* M1669: the guest buffer the game's save file is read into (the F6 COMMUNITY diagnostic): recorded when a
+ * savedata0/system.bin read lands, so the scan can compare the game image with the file and look for parsed copies. */
+uint32_t p5d_save_dst, p5d_save_len;
+static int p5d_save_fd = -1;
 static void h_io_open(Cpu *c) {   /* (path, SCE_O_* flags, mode) -> fd */
 	/* the console's TTYs (the C library's stdin/stdout/stderr): the host's standard streams */
 	const char *gp = (char *)G(A0);
@@ -140,6 +144,7 @@ static void h_io_open(Cpu *c) {   /* (path, SCE_O_* flags, mode) -> fd */
 	fprintf(stderr, "    open %s -> %s%s (fd %#x)\n", (char *)G(A0), hp, fd < 0 ? " (not found)" : "", fd < 0 ? 0 : (uint32_t)fd + 0x100);
 	{ static int on = -1; if (on < 0) { const char *ev = getenv("RECOMP_IO_LR"); on = ev && atoi(ev) != 0; }
 	  if (on && strstr(gp, ".cpk")) fprintf(stderr, "[IOLR] path=%s lr=%#x r0=%#x r1=%#x r13=%#x\n", gp, c->r[14], c->r[0], c->r[1], c->r[13]); }
+	{ if (strstr(hp, "savedata0") && strstr(hp, "system.bin")) p5d_save_fd = fd; }
 	RET(fd < 0 ? sce_err(e) : io_guest_fd(fd));
 }
 static int hfd(uint32_t fd) { const int h = fd >= 0x100 && fd < 0x100 + 4096 ? (int)(fd - 0x100) : -1; return h >= 0 && __atomic_load_n(&owned[h], __ATOMIC_ACQUIRE) ? h : -1; }
@@ -171,6 +176,10 @@ static void h_io_read(Cpu *c) {
 	uint64_t t0 = io_now_us(); gwatch_write_begin(A1, A2);
 	ssize_t n = read(hfd(A0), G(A1), A2); int e = errno; gwatch_write_end(A1, A2);
 	{ int h = hfd(A0);
+	  if (h >= 0 && h == p5d_save_fd && A2 >= 64) {
+		fprintf(stderr, "[SAVEIO] dest=%#x n=%u\n", A1, A2);
+		p5d_save_dst = A1; p5d_save_len = A2;
+	  }
 	  if (h >= 0 && p5d_io_read_log() && A2 >= 64) {
 		extern uint64_t display_frames(void);
 		static int cap;
@@ -184,6 +193,10 @@ static void h_io_pread(Cpu *c) {   /* (fd, buf, size, SceOff offset: 8-aligned, 
 	uint64_t off = RD64(c->r[13]);
 	uint64_t t0 = io_now_us(); gwatch_write_begin(A1, A2); ssize_t n = pread(hfd(A0), G(A1), A2, (off_t)off); int e = errno; gwatch_write_end(A1, A2);
 	{ int h = hfd(A0);
+	  if (h >= 0 && h == p5d_save_fd && A2 >= 64) {
+		fprintf(stderr, "[SAVEIO] dest=%#x n=%u pread\n", A1, A2);
+		p5d_save_dst = A1; p5d_save_len = A2;
+	  }
 	  if (h >= 0 && p5d_io_read_log() && A2 >= 64) {
 		extern uint64_t display_frames(void);
 		static int cap;

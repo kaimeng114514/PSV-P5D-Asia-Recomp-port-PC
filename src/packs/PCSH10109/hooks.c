@@ -1863,9 +1863,90 @@ void recomp_ihook_p5d_nodefps(Cpu *c, int reg) {   /* after "vstr s0,[r0,#0x20]"
  * instruction hook right AFTER that ands (0x8111b6f8): with the cheat on, clear Z so the following beq falls through.
  * F5 toggles it in game (window.c), default off. */
 int p5d_autoplay_enabled;
+
+/* M1669: F6's COMMUNITY unlock, second half. FUN_810c8f78 builds the COMMU list rows; inside its per-event loop it calls
+ * FUN_8108c302 and tests the returned record's bit0 (ands r0,r0,#1; beq ...) to decide the row's state. This IHOOK sits on
+ * that call instruction (0x810c9088) and sets bit0 when the cheat is on, so every event is treated as available. */
+int p5d_commu_cheat;
+
+/* M1676: 60 fps menu/UI steps, the approach of the PersonaDancingRecomp P5D pack (packs/PCSE01275): the game's own
+ * timers add a 1/30 s step per update ("time += 1/30", frame counts x 1/30), assuming one update per Vita frame; at
+ * 60 fps those steps must be 1/60 s. The sites are the movw/movt pairs loading 0x3d088889 (1/30f) in the menu/UI timer
+ * functions; each hook runs AFTER the movt, when the register holds the whole constant. RECOMP_P5D_STEP30=1 keeps the
+ * author's original 30-step menus (the other pack's own opt-out). The judgement window constants are NOT touched. */
+static int p5d_step30_on(void) {
+	return 0;   /* M1676 probe build: conversion off, only log the sites */
+	static int v = -1;
+	if (v < 0) { const char *e = getenv("RECOMP_P5D_STEP30"); v = !(e && atoi(e) != 0); }
+	return v && display_frame_rate_60();
+}
+static void p5d_step30_apply(Cpu *c, int reg, int tag) {
+	static int hits[5];
+	if (reg < 0 || reg > 14) return;
+	int rate = display_frame_rate_60();
+	if (!p5d_step30_on()) {
+		if (!hits[tag]++)
+			fprintf(stderr, "[STEP30] site %c: 60fps=%d value=%#x (not converting)\n", 'a' + tag, rate, c->r[reg]);
+		return;
+	}
+	if (c->r[reg] == 0x3d088889u) {
+		c->r[reg] = 0x3c888889u;
+		if (!hits[tag]++)
+			fprintf(stderr, "[STEP30] site %c: converted 1/30 -> 1/60 (rate=%d)\n", 'a' + tag, rate);
+	} else if (!hits[tag]++) {
+		fprintf(stderr, "[STEP30] site %c: unexpected value %#x (rate=%d)\n", 'a' + tag, c->r[reg], rate);
+	}
+}
+/* M1676 probe: the remaining 1/30f sites, log-only (no conversion): which of them run in the menus decides the real
+ * menu/UI timer sites. Sites: 0x8102eb96 (movt r0), 0x8104999a (movt r2), 0x8111b74e (movt r0, the judgement window --
+ * NEVER converted), 0x8112611a (movt r0), 0x8127f518 (movt r0). */
+static void p5d_probe30(Cpu *c, int reg, int tag, uint32_t addr) {
+	static int hits[5];
+	if (reg < 0 || reg > 14) return;
+	if (!hits[tag]++)
+		fprintf(stderr, "[PROBE30] site %c addr=%#x value=%#x rate=%d\n", 'a' + tag, addr, c->r[reg],
+		        display_frame_rate_60());
+}
+void recomp_ihook_p5d_probe30a(Cpu *c, int reg) { (void)reg; p5d_probe30(c, 0, 0, 0x8102eb96); }
+void recomp_ihook_p5d_probe30b(Cpu *c, int reg) { (void)reg; p5d_probe30(c, 2, 1, 0x8104999a); }
+void recomp_ihook_p5d_probe30c(Cpu *c, int reg) { (void)reg; p5d_probe30(c, 0, 2, 0x8111b74e); }
+void recomp_ihook_p5d_probe30d(Cpu *c, int reg) { (void)reg; p5d_probe30(c, 0, 3, 0x8112611a); }
+void recomp_ihook_p5d_probe30e(Cpu *c, int reg) { (void)reg; p5d_probe30(c, 0, 4, 0x8127f518); }
+/* 0x8103e0a8 (movt r0): object/UI animation step */
+void recomp_ihook_p5d_step30a(Cpu *c, int reg) { (void)reg; p5d_step30_apply(c, 0, 0); }
+/* 0x81044864 (movt r1): menu/UI timer */
+void recomp_ihook_p5d_step30b(Cpu *c, int reg) { (void)reg; p5d_step30_apply(c, 1, 1); }
+/* 0x8104493c (movt r0): menu/UI timer */
+void recomp_ihook_p5d_step30c(Cpu *c, int reg) { (void)reg; p5d_step30_apply(c, 0, 2); }
+/* 0x81044968 (movt r1): menu/UI timer */
+void recomp_ihook_p5d_step30d(Cpu *c, int reg) { (void)reg; p5d_step30_apply(c, 1, 3); }
+/* 0x8104593a (movt r0): animation sample step */
+void recomp_ihook_p5d_step30e(Cpu *c, int reg) { (void)reg; p5d_step30_apply(c, 0, 4); }
+
+/* M1669: coverage hooks. FUN_8108c302 is the id -> record lookup whose result bit0 decides whether a COMMU event is
+ * available; the list is built from more than one caller (p3/p5, list/detail). While the F6 cheat is on, every call site
+ * forces bit0, so whichever path the screen takes the events come out unlocked. */
+void p5d_commuopen_force(Cpu *c) {
+	/* M1669: FUN_810c8f78 tests bit0 of FUN_8108c302's result: bit set = debug/skip path, bit clear = the row is really
+	 * built (and flagGet/flagSet run). So the cheat CLEARS bit0 (the earlier |= 1 was backwards and hid the rows). */
+	static int n;
+	if (p5d_commu_cheat) { if (n < 80) { n++; fprintf(stderr, "[COMMUHOOK] ret=%#x\n", c->r[0]); } c->r[0] &= ~1u; }
+}
+
+void recomp_ihook_p5d_commuopen(Cpu *c, int reg) {
+	(void)reg;
+	if (!p5d_commu_cheat) return;
+	static int n;
+	if (n < 60) { n++; fprintf(stderr, "[COMMUHOOK] #%d ret=%#x\n", n, c->r[0]); }
+	c->r[0] |= 1;
+}
+
 void recomp_ihook_p5d_autoplay(Cpu *c, int reg) {
 	(void)reg;
-	if (p5d_autoplay_enabled) c->z = 0;   /* the beq at 0x8111b6fc tests Z; clearing it = the NOP'ed branch */
+	extern int p5d_autoplay_stage(void);
+	/* M1668: the original cheat again (clear Z = the NOP'ed branch), but only while the autoplay stage signal says a song runs:
+	 * always through the song (no per-frame gauge dependence), never on the ready/select screens, pause or config page. */
+	if (p5d_autoplay_enabled && p5d_autoplay_stage()) c->z = 0;
 }
 
 /* M1649: fn_81045fb4(node, time_bits, r2) is the per-frame pose update entry: it forwards its r1 (float bits of the
@@ -2304,3 +2385,16 @@ void recomp_hook_p5d_site_18(Cpu *c) { p5d_site_log(18, c); }
 void recomp_hook_p5d_site_19(Cpu *c) { p5d_site_log(19, c); }
 void recomp_hook_p5d_site_20(Cpu *c) { p5d_site_log(20, c); }
 void recomp_hook_p5d_site_21(Cpu *c) { p5d_site_log(21, c); }
+
+void recomp_ihook_p5d_cp0(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp1(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp2(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp3(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp4(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp5(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp6(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp7(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp8(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp9(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp10(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }
+void recomp_ihook_p5d_cp11(Cpu *c, int reg) { (void)reg; p5d_commuopen_force(c); }

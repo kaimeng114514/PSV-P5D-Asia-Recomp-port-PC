@@ -38,6 +38,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/* window.c: the measured display rate (M1652) - distinct pictures the window really shows per second, which includes the
+ * driver's AI-interpolated frames. 0 when the measurement is unavailable (no window, occluded, non-Windows). */
+extern float window_display_fps(void);
+
 #include "metrics.h"
 #include "platform.h"
 #ifdef __APPLE__
@@ -403,7 +408,14 @@ static void maybe_tick(uint64_t now) {
 	        fps, avg_ms, max_ms, low1_ms, speed, backend, scenes, draws, (gpu && fd) ? " (sw fallback)" : "", cpu, wfps);
 
 	/* the overlay's own lines, in its font's upper-case + digits + ". : / - %" charset only */
-	snprintf(line_full[0], sizeof line_full[0], "FPS %.1f FRAME %.1f/%.1f/%.1f MS", fps, avg_ms, max_ms, low1_ms);
+	/* M1646: with the AI-interpolation present mode on, show the driver's interpolated rate next to the real one. The driver
+	 * does not expose the generated-frame count, so this is Smooth Motion's usual ~2x, capped by the display refresh; it is
+	 * labelled EST and the NVIDIA overlay remains the measured source. */
+	/* M1652: FPS is the real render rate, DISP the measured displayed rate (window.c's capture thread, includes the driver's
+	 * interpolated frames; no estimate). Without a measurement the line stays the old FPS/frame-time one. */
+	double disp = window_display_fps();
+	if (disp >= 1.0) snprintf(line_full[0], sizeof line_full[0], "FPS %.1f FRAME %.1fMS DISP %.0f", fps, avg_ms, disp);
+	else snprintf(line_full[0], sizeof line_full[0], "FPS %.1f FRAME %.1f/%.1f/%.1f MS", fps, avg_ms, max_ms, low1_ms);
 	snprintf(line_full[1], sizeof line_full[1], "SPEED %.2fX WINDOW %.1f FPS", speed, wfps);
 	snprintf(line_full[2], sizeof line_full[2], "%s%s %uSCN %uDR %uSW", gpu ? "GPU" : "SOFT", gpu && rs == 2 ? " 2X" : gpu && rs == 3 ? " 3X" : gpu && rs == 4 ? " 4X" : "", scenes, draws, fd);
 	snprintf(line_full[3], sizeof line_full[3], "RENDER %.1fMS PRESENT %.1fMS", render_ms, present_ms);
