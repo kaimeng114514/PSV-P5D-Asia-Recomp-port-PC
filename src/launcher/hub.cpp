@@ -2497,6 +2497,7 @@ static std::string g_p5d_rom_tried;     /* the path an import was started for in
 static bool g_p5d_undo_ask;             /* the 撤銷導入 confirmation popup is open */
 static std::string g_p5d_steam_msg;     /* the last 添加到 Steam 庫 result (shown under the button) */
 static bool g_p5d_steam_ok;
+static bool g_p5d_disclaimer_ask;       /* M1823: the first-run disclaimer is reopened from 其他設置 */
 static std::string g_p5d_fw_path;       /* the .PUP they picked: the Vita system software */
 static const Game *p5d_game(void) {
 	for (const Game &g : g_games) if (g.id == "PCSH10109") return &g;
@@ -2815,6 +2816,56 @@ static void p5d_ui(SDL_Window *win) {
 			ImDrawList *dl = ImGui::GetWindowDrawList();
 			dl->AddImage(tex_ref(bg), ImVec2(a.x + (ws - iw) * 0.5f, a.y + (hs - ih) * 0.5f), ImVec2(a.x + (ws + iw) * 0.5f, a.y + (hs + ih) * 0.5f));
 			dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 150));
+		}
+	}
+
+	/* M1823: the first-run disclaimer gate. Until the player ticks the box, the whole page is replaced by the notice
+	 * (a modal could be dismissed with Esc, so the gate is a page instead); the acceptance is remembered in launcher.ini
+	 * together with the notice version, so a changed notice asks again. 其他設置 can reopen it; ATIV_SHOT skips it so the
+	 * documentation screenshots stay capturable (ATIV_SHOT_DISC=1 forces it for a capture). */
+	{
+		static const char *const DISC_VER = "1";
+		static bool disc_checked;
+		const std::string acc = g_prefs.count("p5d_disclaimer") ? g_prefs["p5d_disclaimer"] : "";
+		const bool accepted = acc == DISC_VER;
+		const bool shot_skip = getenv("ATIV_SHOT") && !getenv("ATIV_SHOT_DISC");
+		if ((!accepted || g_p5d_disclaimer_ask) && !shot_skip) {
+			ui::heading(P5D_TITLE, em * 1.7f);
+			ImGui::TextDisabled("Persona 5 Dancing in Starlight · PC 移植版");
+			ImGui::Dummy(ImVec2(0, em * 1.2f));
+			ui::heading("使用前請閱讀並同意免責聲明", em * 1.25f);
+			ui::muted_wrapped("P5D Windows 移植版是由玩家社區開發的非官方、非商業同人移植工程，與 ATLUS／SEGA／Sony 沒有任何關係，也未獲得其授權、贊助或認可。");
+			ImGui::Dummy(ImVec2(0, em * 0.5f));
+			ImGui::BeginChild("##p5d_disclaimer_text", ImVec2(0, vp->WorkSize.y * 0.46f), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+			auto bullet = [](const char *t) { ImGui::Bullet(); ImGui::SameLine(); ImGui::TextWrapped("%s", t); };
+			bullet("必須自備正版遊戲：您需要自己合法持有的《Persona 5: Dancing in Starlight》（PCSH10109，亞洲版）與 PS Vita 系統固件；本移植版不包含遊戲本體、遊戲數據、密鑰、固件或遊戲重編譯產物。");
+			bullet("僅限個人非商業用途：本移植版供個人學習、研究、備份與離線遊玩；不得用於破解其他作品或繞過版權保護；非商業使用（以 GPL-2 發布的代碼依 GPL-2 處理）。");
+			bullet("不協助獲取遊戲資源：本項目不提供、也不協助獲取遊戲本體、固件或任何盜版資源；請勿傳播解密後的遊戲數據、固件或重編譯產物。");
+			bullet("社區分享：玩家可在社區內原樣、免費分享本移植版，但請保留出處與官方發布頁鏈接，不要以移植者名義發布或冒充官方更新。");
+			bullet("試用與刪除：若您僅作試用或評估，請在 24 小時內刪除發行包程序文件；您自行合法備份的遊戲數據、存檔與 GPL-2 源碼不受此限。");
+			bullet("風險自負、不提供擔保與技術支持：因使用本軟件導致的存檔損壞、數據丟失、設備問題或其它損失由使用者自行承擔；重要存檔請自行備份。");
+			bullet("未成年人：未滿 18 歲（或當地法定成年年齡）者，須事先取得監護人知情並明確同意。");
+			bullet("完整條款：完整免責聲明（23 條）見 README；條款可能更新，更新後繼續使用即視為接受。");
+			ImGui::EndChild();
+			ImGui::Dummy(ImVec2(0, em * 0.5f));
+			ImGui::Checkbox("我已閱讀並確認上述內容，並同意完整免責聲明（見 README）", &disc_checked);
+			ImGui::Dummy(ImVec2(0, em * 0.3f));
+			ImGui::BeginDisabled(!disc_checked);
+			if (ui::primary_button("同 意 並 繼 續")) {
+				prefs_set("p5d_disclaimer", DISC_VER);
+				g_p5d_disclaimer_ask = false;
+				disc_checked = false;
+			}
+			ImGui::EndDisabled();
+			if (accepted) {
+				ImGui::SameLine();
+				if (ImGui::Button("返回")) { g_p5d_disclaimer_ask = false; disc_checked = false; }
+			} else {
+				ImGui::SameLine();
+				ImGui::TextDisabled("需勾選後才能使用啟動器");
+			}
+			ImGui::End();
+			return;
 		}
 	}
 
@@ -3150,6 +3201,11 @@ static void p5d_ui(SDL_Window *win) {
 #else
 			ui::muted_wrapped("Steam 快捷方式目前只在 Windows 版啟動器裡提供。");
 #endif
+
+			/* M1823: re-open the first-run notice from here (players may want to read it again). */
+			ImGui::Dummy(ImVec2(0, em * 0.9f));
+			ImGui::SeparatorText("其他");
+			if (ImGui::Button("查看使用條款／免責聲明")) g_p5d_disclaimer_ask = true;
 
 			ImGui::EndTabItem();
 		}
