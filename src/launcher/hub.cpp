@@ -2431,7 +2431,7 @@ static const char *const P5D_TITLE = "P5D Windows移植版启动器";
 static const std::string &p5d_version(void) {
 	static std::string v;
 	if (!v.empty()) return v;
-	v = "v0.2.2";   /* (M1793: the version this source belongs to; a release's payload version.txt overrides it) */
+	v = "v0.2.3";   /* (M1793: the version this source belongs to; a release's payload version.txt overrides it) */
 	if (FILE *f = fopen((g_root + "/version.txt").c_str(), "rb")) {
 		char b[128]; size_t n = fread(b, 1, sizeof b - 1, f); fclose(f); b[n] = 0;
 		std::string t(b); size_t e = t.find_first_of("-\r\n");
@@ -3231,7 +3231,9 @@ static void p5d_ui(SDL_Window *win) {
 			ImGui::Dummy(ImVec2(0, em * 0.9f));
 			ImGui::EndTabItem();
 		}
-		if (ImGui::BeginTabItem("MOD")) {
+		/* ATIV_SHOT documentation aid: P5D_SHOT_TAB=MOD opens the MOD page for a screenshot */
+		const bool shot_mod_tab = getenv("ATIV_SHOT") && getenv("P5D_SHOT_TAB") && !strcmp(getenv("P5D_SHOT_TAB"), "MOD");
+		if (ImGui::BeginTabItem("MOD", nullptr, shot_mod_tab ? ImGuiTabItemFlags_SetSelected : 0)) {
 			ImGui::Dummy(ImVec2(0, em * 0.5f));
 			ui::heading("MOD", em * 1.25f);
 			ui::muted_wrapped("支援 Reloaded-II 格式的 MOD（Mod.xml + Data/ 文件夾）。導入後可逐個開關；啟用時啟動遊戲會用 MOD 的文件替換遊戲內同名資源。");
@@ -3277,18 +3279,24 @@ static void p5d_ui(SDL_Window *win) {
 					if (ImGui::Checkbox("啟用", &en)) { m.enabled = en; dirty = true; }
 					ImGui::SameLine(); ImGui::TextDisabled(en ? "啟動遊戲時生效" : "未啟用");
 					ImGui::EndGroup();
+					/* M1824: the card's real height is the taller of the cover and the text column. The separator used to
+					 * be drawn right after the 撤銷導入 button, whose SetCursorScreenPos puts the cursor at the cover's
+					 * bottom edge -- so with a long description the line ran through the text (separator position was
+					 * the cover height, not the card height). */
+					const float card_h = std::max(img_h, ImGui::GetItemRectSize().y);
 					{   /* M1749: 撤銷導入（右下角） */
 						const char *label = "撤銷導入";
 						const ImVec2 ts = ImGui::CalcTextSize(label);
 						const ImGuiStyle &st = ImGui::GetStyle();
 						const float bw = ts.x + st.FramePadding.x * 2.0f, bh = ts.y + st.FramePadding.y * 2.0f;
-						ImGui::SetCursorScreenPos(ImVec2(card_start.x + card_w - bw, card_start.y + img_h - bh));
+						ImGui::SetCursorScreenPos(ImVec2(card_start.x + card_w - bw, card_start.y + card_h - bh));
 						ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.18f, 0.18f, 1.0f));
 						ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.62f, 0.24f, 0.24f, 1.0f));
 						ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.38f, 0.14f, 0.14f, 1.0f));
 						if (ImGui::Button(label)) to_remove = m.dir;
 						ImGui::PopStyleColor(3);
 					}
+					ImGui::SetCursorScreenPos(ImVec2(card_start.x, card_start.y + card_h + ImGui::GetStyle().ItemSpacing.y));
 					ImGui::Separator();
 					ImGui::PopID();
 				}

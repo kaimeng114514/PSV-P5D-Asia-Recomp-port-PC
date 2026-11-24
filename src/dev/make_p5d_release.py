@@ -83,7 +83,7 @@ All building happens on your own computer; nothing is uploaded. The game data an
 Licensed under GPL-2.0 (see LICENSE); third-party licences are listed in THIRD_PARTY.md.
 """
 
-RELEASE_VERSION = "v0.2.2-p5d"
+RELEASE_VERSION = "v0.2.3-p5d"
 PROVISION_VERSION = "2"   # bump when the packaging rules themselves change (part of the payload stamp)   # written into the payload's version.txt: ready builds against this, so a launch doesn't rebuild
 FNV_OFFSET, FNV_PRIME = 1469598103934665603, 1099511628211
 
