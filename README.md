@@ -179,52 +179,6 @@
 
 **手柄**：即插即用；使用手柄时游戏内提示图标会恢复原版手柄键帽。
 
----
-
-## 🖼️ 截图：全部由原版 P5D 代码在本项目的移植运行时里绘制
-
-> 截图取自游戏自己的帧缓冲（见下文"验证链"），不是渲染示意图，也不是窗口截图（启动器截图除外）。
-> 游戏画面版权归 **ATLUS / SEGA**，此处仅作逆向工程/移植进度说明。
-
-### S0_LOGO：原版开场 logo 序列
-
-| ATLUS | P-STUDIO | CRIWARE |
-|---|---|---|
-| ![ATLUS](docs/screenshots/01_s0_atlus.png) | ![P-STUDIO](docs/screenshots/02_s0_pstudio.png) | ![CRIWARE](docs/screenshots/03_s0_criware.png) |
-
-### S1_TITLE：标题画面 + USM 影片背景
-
-| 标题画面 | USM 影片背景 | 标题→剧情过渡 |
-|---|---|---|
-| ![标题](docs/screenshots/04_s1_title.png) | ![USM 影片](docs/screenshots/09_s1_title_usm_video.png) | ![过渡](docs/screenshots/05_s1_title_transition.png) |
-
-### S2_MENU / S3_SELECT：主菜单与选歌
-
-| 主菜单（角色列表/社群） | 选歌界面 |
-|---|---|
-| ![社群](docs/screenshots/25_commu_lr_qe.png) | ![选歌](docs/screenshots/13_song_select.png) |
-
-### S4_GAME：舞池
-
-| 舞池舞台 | 键位图标 + 判定 | 六键字母 |
-|---|---|---|
-| ![舞池](docs/screenshots/38_dance_stage_m1485.png) | ![判定](docs/screenshots/26_dance_keys_gauge.png) | ![键位](docs/screenshots/24_dance_letters.png) |
-
-### RESULT：结算
-
-| 记分动画（tally） | 4 行结果菜单 |
-|---|---|
-| ![结算 tally](docs/screenshots/39_result_tally_m1485.png) | ![结果菜单](docs/screenshots/41_result_menu_after_tally.png) |
-
-### 启动器
-
-| 启动器主界面 | P5 主题 |
-|---|---|
-| ![启动器](docs/screenshots/32_launcher_p5d.png) | ![主题](docs/screenshots/34_launcher_p5_theme.png) |
-| ![v0.1.0 图标](docs/screenshots/42_launcher_icon_v0_1_0.png) | |
-
----
-
 ## 与 Vita3K 模拟器的区别
 
 本项目不是模拟器，而是**把原版 P5D 的 ARM 代码静态重编译（AOT）成 x86-64 原生程序**，Sony 的系统库也从固件重编译成本地代码、由本地兼容层（HLE）接管。两者的定位与实现不同：
