@@ -35,7 +35,7 @@
   | ![动态亮丽 0%（关闭）](docs/screenshots/vibrance_off_0pct.png) | ![动态亮丽 50%](docs/screenshots/vibrance_50pct.png) | ![动态亮丽 100%](docs/screenshots/vibrance_100pct.png) |
 
 - **DLC 支持**：启动器可导入追加内容（`reAddcont/PCSH10109`），显示已导入数量／大小，可一键移除；不导入不影响本体。
-- **游戏构建后存放位置可自定义**：启动器「主頁 → ③ 遊戲檔案存放位置」可把构建后的游戏、存档、固件与 MOD 放到任意文件夹（记住选择；不选则用默认位置；改到空文件夹时会把现有游戏库连同存档一起移动过去（同盘瞬间；跨盘逐档移动，不占双份空间））。
+- **游戏构建后存放位置可自定义**：启动器「其他設置 → 遊戲存放位置」可把构建后的游戏、存档、固件与 MOD 放到任意文件夹（记住选择；不选则用默认位置；改到空文件夹时会把现有游戏库连同存档一起移动过去（同盘瞬间；跨盘逐档移动，不占双份空间））。该功能在游戏构建完成后才可用。
 - **MOD 支持**：兼容 Reloaded-II 格式 MOD（`Mod.xml` + `Data/` 文件夹）；启动器内导入、显示封面／名称／作者／版本，
   逐个开关并持久化；启用后启动游戏自动替换 CPK 内同名资源。已用社区泳装 MOD 与自制裸体 MOD 实测模型替换成功。
 
@@ -54,6 +54,16 @@
   請玩家自備遊戲本體或取得該 MOD。*
 
   MOD 仓库／说明与下载：<https://github.com/kaimeng114514/psv-p5d-female-nude-mod>
+
+- **一键导入 Steam**：游戏构建完成后，启动器「其他設置 → Steam → 添加到 Steam 庫」可以**一键把本移植版加入 Steam 庫**——
+  自动写入非 Steam 快捷方式（含稳定入口，启动器以后更新也不会失效），并从玩家自己构建出的游戏文件**自动生成并写入竖版封面、宽幅头图与详情页背景**；
+  之后即可在 Steam 里启动（Steam 覆盖层、游戏时长统计）。桌面启动器仍然可以照常使用。
+
+  | Steam 庫中的「P5D Windows移植版」圖示 | Steam 遊戲詳情頁（自動生成的背景與封面） |
+  |---|---|
+  | ![Steam 庫圖示](docs/screenshots/steam_library_shortcut.png) | ![Steam 遊戲詳情頁](docs/screenshots/steam_game_page.png) |
+
+  *说明：不支援 Steam 的手柄配置（Steam Input）映射——手柄使用游戏内建支援；添加前请先完全退出 Steam（Steam 退出时会覆写快捷方式文件）。*
 
 - **金手指（内置）**：
   - **F5**：自动演奏（开启/关闭，画面上方显示提示框）；
@@ -114,8 +124,9 @@
 ## 📦 源码
 
 
-- **源码快照**：[`src/`](src/) —— 移植工程源码（对应提交 `6dd5ab9`，405 个文件，约 20 MB；含 pipeline / recompiler /
+- **源码快照**：[`src/`](src/) —— 移植工程源码（当前已与开发线 **v0.2.2** 对齐；含 pipeline / recompiler /
   runtime / decrypt / packs / third_party / launcher / dev）。即使本地工程被删除，也可以从本仓库恢复并重新构建。
+- 按发布红线，`src/` 不含图片资源（启动器图标/背景等，见 [`src/ASSETS_EXCLUDED.txt`](src/ASSETS_EXCLUDED.txt)）；从发布版 exe 解包后可恢复。
 - 仓库**不含**游戏数据、固件、解密产物或工具链二进制；这些由玩家自备。
 
 ### 键盘操作
