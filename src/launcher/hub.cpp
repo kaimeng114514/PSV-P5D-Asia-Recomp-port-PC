@@ -17,7 +17,7 @@
  * ATIV_PREFS=<dir>: the launcher's own files and the shared settings there instead of the user's app folder (a test).
  * ATIV_DUMP=<dir>: the library (games, firmware, licences, builds, saves) there instead of the usual one, library_dir (a
  * fresh library to try setup on; the stages it runs inherit it). ATIV_SHOT=f.ppm (a verification aid, no visible window): renders the hub once into f.ppm and exits;
- * ATIV_SHOT_UI=library|setup:<0-4>|add|settings:<0-2>|game:<title>|sac|sac:again picks what is on screen, ATIV_SHOT_SIZE=WxH the size (1280x800),
+ * ATIV_SHOT_UI=library|setup:<0-4>|add|settings:<0-3>|game:<title>|sac|sac:again picks what is on screen, ATIV_SHOT_SIZE=WxH the size (1280x800),
  * ATIV_SHOT_SCAN=<rows> a folder search's results (vitarecomp scan's output) in the Add dialog.
  * ATIV_TASK=play:<title>|build:<title>|scan:<folder>|licences:<folder>|firmware:<file> (a verification aid, no window): that
  * task run as its button runs it, its log printed, the exit status its outcome; ATIV_TASK_CANCEL=<seconds>: Cancel then.
@@ -50,6 +50,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <shellapi.h>   /* ShellExecuteA: the frame-generation panel opens NVIDIA App (M1645) */
+#include <tlhelp32.h>   /* M1788: the Steam-running check before writing shortcuts.vdf */
+#include <objbase.h>    /* CoInitializeEx/CoCreateInstance: the folder chooser (M1732) */
+#include <shobjidl.h>   /* IFileOpenDialog: choosing where the game files live (M1732) */
 #include <direct.h>
 #include <io.h>
 #else
@@ -68,6 +72,15 @@ static bool p5d_mode(void);              /* the P5D single-page front (P5D_LAUNC
 static void p5d_ui(SDL_Window *win);
 static int p5d_res_index(void);
 static void p5d_start_play(int res);
+static int p5d_build_stale(void);
+static std::string library_dir(void);          /* (defined below: the library path, prefs p5d_libdir) */
+static std::string library_default_dir(void);  /* (the default folder shown in Settings -> Storage) */
+static std::atomic<bool> g_move_running{false}, g_move_ok{false}, g_move_finished{false};   /* M1736: library copy state */
+static std::string g_move_to, g_move_error;
+static bool g_move_clear_pref;   /* M1743: the move target is the default folder (clear p5d_libdir) */
+static void change_game_folder(void);           /* M1736: pick a folder, move the existing library there, then switch */
+static void change_to_default_folder(void);     /* M1743: move the library back to the default folder */
+static void game_folder_move_poll(void);       /* M1736: finish a running library move */
 static SDL_Window *g_hub_win;   /* the launcher's window: it gets out of the game's way (and out of its keyboard's) while the game runs */
 static std::string g_root = REPO_ROOT;   /* the repository (ATIV_ROOT overrides; else found from where the launcher is) */
 static std::string g_dump;               /* the player's library: games, firmware, licences, builds, saves (library_dir) */
@@ -83,10 +96,123 @@ static std::wstring wide(const std::string &s) {
 	std::wstring w((size_t)n, L'\0'); if (n) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
 	return w;
 }
+static std::string narrow(const std::wstring &w) {
+	int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+	std::string s((size_t)n, '\0'); if (n) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
+	return s;
+}
+/* M1732: the native folder picker (folders only); "" = cancelled. */
+static std::string pick_folder_dialog(const std::string &initial) {
+	std::string out;
+	CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+	IFileOpenDialog *dlg = nullptr;
+	if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+		DWORD opts = 0; dlg->GetOptions(&opts);
+		dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+		dlg->SetTitle(L"Where should the game files live?");
+		if (!initial.empty()) { IShellItem *it = nullptr; if (SUCCEEDED(SHCreateItemFromParsingName(wide(initial).c_str(), nullptr, IID_PPV_ARGS(&it)))) { dlg->SetFolder(it); it->Release(); } }
+		if (SUCCEEDED(dlg->Show(nullptr))) {
+			IShellItem *it = nullptr;
+			if (SUCCEEDED(dlg->GetResult(&it))) { PWSTR w = nullptr; if (SUCCEEDED(it->GetDisplayName(SIGDN_FILESYSPATH, &w))) { out = narrow(std::wstring(w)); CoTaskMemFree(w); } it->Release(); }
+		}
+		dlg->Release();
+	}
+	CoUninitialize();
+	return out;
+}
 #else
+static std::string narrow(const std::wstring &) { return ""; }
+static std::string pick_folder_dialog(const std::string &) { return ""; }   /* (the shell folder picker is Windows-only) */
 static void make_dir(const std::string &p) { mkdir(p.c_str(), 0755); }
 static void set_env(const char *k, const std::string &v) { setenv(k, v.c_str(), 1); }
 #endif
+#ifdef _WIN32
+/* ---- M1651: the AI-interpolation profile repair ----------------------------------------------------------------
+ * NVIDIA App stores its Smooth Motion ("AI 插帧") toggle in a driver profile named after the executable. For this game its
+ * own "add application" step fails (CxNative log: "Failed to get app metadata: m_AddManualApplication failed with 7") and
+ * leaves the profile's only application entry as a broken path ("c:/users/"), so the profile never matches the running
+ * game and the driver's frame interpolation never engages. The launcher repairs that entry through NVAPI DRS: add an
+ * application named "game_host_min.exe" to the existing profile and save it. Measured on this machine (30 fps dance
+ * stage, external capture probe): 29.8 distinct pictures/s before the repair, 55.2 after. */
+typedef unsigned int NvU32R; typedef unsigned short NvU16R; typedef unsigned long long NvU64R; typedef float NvF32R;
+typedef int NvAPI_StatusR;
+#define NVAPI_USTR_MAX 2048
+#define NVAPI_BIN_MAX 4096
+typedef NvU16R NvAPI_UnicodeStringR[NVAPI_USTR_MAX];
+typedef struct { NvU32R valueLength; unsigned char valueData[NVAPI_BIN_MAX]; } NVDRS_BINARY_SETTING_R;
+#pragma pack(push, 4)
+typedef struct { NvU32R version; NvAPI_UnicodeStringR settingName; NvU32R settingId; NvU32R settingType; NvU32R settingLocation;
+	NvU32R isCurrentPredefined; NvU32R isPredefinedValid;
+	union { NvU32R u32PredefinedValue; NVDRS_BINARY_SETTING_R binaryPredefinedValue; NvAPI_UnicodeStringR wszPredefinedValue; NvU64R u64PredefinedValue; NvF32R f32PredefinedValue; } predefined;
+	union { NvU32R u32CurrentValue; NVDRS_BINARY_SETTING_R binaryCurrentValue; NvAPI_UnicodeStringR wszCurrentValue; NvU64R u64CurrentValue; NvF32R f32CurrentValue; } current;
+} NVDRS_SETTING_R;
+typedef struct { NvU32R version; NvAPI_UnicodeStringR profileName; NvU32R gpuSupport; NvU32R isPredefined; NvU32R numOfApps; NvU32R numOfSettings; } NVDRS_PROFILE_R;
+typedef struct { NvU32R version; NvU32R isPredefined; NvAPI_UnicodeStringR appName; NvAPI_UnicodeStringR userFriendlyName;
+	NvAPI_UnicodeStringR launcher; NvAPI_UnicodeStringR fileInFolder; NvU32R flags; NvAPI_UnicodeStringR commandLine; } NVDRS_APPLICATION_R;
+#pragma pack(pop)
+#define NVVER_R(t, v) ((NvU32R)(sizeof(t) | ((v) << 16)))
+typedef void *(*P5DNvQi)(NvU32R);
+static void p5d_nv_setw(NvAPI_UnicodeStringR dst, const wchar_t *s) { wcsncpy_s((wchar_t *)dst, NVAPI_USTR_MAX, s, _TRUNCATE); }
+static std::string g_fgx_note;   /* the ⑦ panel's driver-file status line */
+static bool p5d_repair_fgx_profile(std::string *detail) {
+	HMODULE h = LoadLibraryA("nvapi64.dll");
+	if (!h) { if (detail) *detail = "no nvapi64.dll"; return false; }
+	auto qi = (P5DNvQi)GetProcAddress(h, "nvapi_QueryInterface");
+	if (!qi) { if (detail) *detail = "no nvapi_QueryInterface"; return false; }
+	auto Initialize = (NvAPI_StatusR (*)())qi(0x0150e828);
+	auto CreateSession = (NvAPI_StatusR (*)(void **))qi(0x0694d52e);
+	auto LoadSettings = (NvAPI_StatusR (*)(void *))qi(0x375dbd6b);
+	auto SaveSettings = (NvAPI_StatusR (*)(void *))qi(0xfcbc7e14);
+	auto FindProfileByName = (NvAPI_StatusR (*)(void *, NvAPI_UnicodeStringR, void **))qi(0x7e4a9a0b);
+	auto EnumApplications = (NvAPI_StatusR (*)(void *, void *, NvU32R, NvU32R *, NVDRS_APPLICATION_R *))qi(0x7fa2173a);
+	auto CreateApplication = (NvAPI_StatusR (*)(void *, void *, NVDRS_APPLICATION_R *))qi(0x4347a9de);
+	if (!Initialize || !CreateSession || !LoadSettings || !SaveSettings || !FindProfileByName || !EnumApplications || !CreateApplication) {
+		if (detail) *detail = "nvapi entry points missing"; return false;
+	}
+	if (Initialize() != 0) { if (detail) *detail = "NvAPI_Initialize failed"; return false; }
+	void *sess = nullptr; if (CreateSession(&sess) != 0 || !sess) { if (detail) *detail = "session failed"; return false; }
+	LoadSettings(sess);
+	NvAPI_UnicodeStringR pn;
+	{ const char *ov = getenv("P5D_FGX_PROFILE");
+	  if (ov && *ov) { int n = MultiByteToWideChar(CP_UTF8, 0, ov, -1, nullptr, 0); if (n > 1 && n <= NVAPI_USTR_MAX) MultiByteToWideChar(CP_UTF8, 0, ov, -1, (wchar_t *)pn, n); else p5d_nv_setw(pn, L"game_host_min.exe"); }
+	  else p5d_nv_setw(pn, L"game_host_min.exe"); }
+	void *prof = nullptr;
+	if (FindProfileByName(sess, pn, &prof) != 0 || !prof) {
+		if (detail) *detail = "no AI 插帧 profile yet (enable AI 插帧 for this program in NVIDIA App once)";
+		return false;
+	}
+	bool have = false;
+	for (NvU32R k = 0; k < 16; k++) {
+		NVDRS_APPLICATION_R *a = (NVDRS_APPLICATION_R *)calloc(1, sizeof(NVDRS_APPLICATION_R) + 4096);
+		if (!a) break;
+		a->version = NVVER_R(NVDRS_APPLICATION_R, 4);
+		NvU32R cnt = 1;
+		if (EnumApplications(sess, prof, k, &cnt, a) != 0) { free(a); break; }
+		const wchar_t *n = (const wchar_t *)a->appName;
+		if (wcsstr(n, L"game_host_min.exe")) have = true;
+		free(a);
+	}
+	if (have) { if (detail) *detail = "driver file OK"; return false; }
+	NVDRS_APPLICATION_R *na = (NVDRS_APPLICATION_R *)calloc(1, sizeof(NVDRS_APPLICATION_R) + 4096);
+	if (!na) { if (detail) *detail = "out of memory"; return false; }
+	na->version = NVVER_R(NVDRS_APPLICATION_R, 4);
+	p5d_nv_setw(na->appName, L"game_host_min.exe");
+	p5d_nv_setw(na->userFriendlyName, L"Persona 5 Dancing in Starlight");
+	NvAPI_StatusR st = CreateApplication(sess, prof, na);
+	free(na);
+	if (st == 0) {
+		SaveSettings(sess);
+		if (detail) *detail = "driver file repaired (NVIDIA App had written a broken application path)";
+		return true;
+	}
+	if (detail) *detail = "driver file repair failed";
+	return false;
+}
+#else
+static std::string g_fgx_note;
+static bool p5d_repair_fgx_profile(std::string *detail) { (void)detail; return false; }
+#endif
+
 static std::string shown_args(const std::vector<std::string> &argv) {   /* a command for the log: words with spaces quoted */
 	std::string s;
 	for (const std::string &a : argv) { if (!s.empty()) s += ' '; s += a.empty() || a.find_first_of(" \t\"'") != std::string::npos ? "\"" + a + "\"" : a; }
@@ -111,7 +237,11 @@ static std::vector<std::string> vitarecomp(std::initializer_list<std::string> ar
 }
 static void open_folder(const std::string &p) {
 #ifdef _WIN32
-	std::string u = p; std::replace(u.begin(), u.end(), '\\', '/'); SDL_OpenURL(("file:///" + u).c_str());
+	/* M1733: not SDL_OpenURL -- it blocked the launcher's UI thread while the shell processed the open verb (the
+	 * "打開文件夾" button froze the window). ShellExecuteW only starts the shell and returns; the same call the game
+	 * helper p5d_open_path uses. A missing folder would make the shell show its own error dialog: create it first. */
+	make_dir(p);
+	ShellExecuteW(nullptr, L"open", wide(p).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #else
 	SDL_OpenURL(("file://" + p).c_str());
 #endif
@@ -155,6 +285,87 @@ static Tex texture(const std::string &path) {
 }
 static ImTextureRef tex_ref(const Tex &t) { return ImTextureRef((ImTextureID)(intptr_t)t.t); }
 
+/* ---- MODs (M1664): Reloaded-II folder mods under <library>/decrypted/PCSH10109/recomp/mods.
+ * A mod is a folder with Mod.xml (Id/Title/Author/Version/Description) and a Data/ tree whose files replace the
+ * game's same-named resources (the runtime applies that; the launcher imports, lists, and remembers each one's switch). */
+struct P5dMod { std::string dir, title, author, version, desc, cover; bool enabled = false; };
+static std::string mods_root(void) { return g_dump + "/decrypted/PCSH10109/recomp/mods"; }
+static std::string mod_field(const std::string &xml, const char *tag) {
+	std::string open = std::string("<") + tag + ">", close = std::string("</") + tag + ">";
+	size_t a = xml.find(open); if (a == std::string::npos) return "";
+	a += open.size(); size_t b = xml.find(close, a); if (b == std::string::npos) return "";
+	return xml.substr(a, b - a);
+}
+static std::string path_base(const std::string &p) { size_t i = p.find_last_of("/\\"); return i == std::string::npos ? p : p.substr(i + 1); }
+static void mods_scan(std::vector<P5dMod> &out) {
+	out.clear();
+	std::string root = mods_root();
+	std::map<std::string, bool> en;
+	{ FILE *f = fopen((root + "/mods.ini").c_str(), "rb"); if (f) { char line[512];
+		while (fgets(line, sizeof line, f)) { std::string t = line; while (!t.empty() && (t.back() == '\n' || t.back() == '\r' || t.back() == ' ')) t.pop_back();
+			if (t.rfind("enabled=", 0) == 0) en[t.substr(8)] = true; } fclose(f); } }
+	DIR *d = opendir(root.c_str()); if (!d) return;
+	while (struct dirent *e = readdir(d)) {
+		std::string nm = e->d_name; if (nm == "." || nm == "..") continue;
+		std::string dir = root + "/" + nm; struct stat st;
+		if (stat(dir.c_str(), &st) != 0 || !(st.st_mode & S_IFDIR)) continue;
+		P5dMod m; m.dir = dir; m.title = nm; m.enabled = en.count(nm) > 0;
+		{ FILE *f = fopen((dir + "/Mod.xml").c_str(), "rb");
+		  if (f) { std::string xml; char buf[4096]; size_t n;
+			while ((n = fread(buf, 1, sizeof buf, f)) > 0) xml.append(buf, n); fclose(f);
+			std::string t = mod_field(xml, "Title"); if (!t.empty()) m.title = t;
+			m.author = mod_field(xml, "Author"); m.version = mod_field(xml, "Version"); m.desc = mod_field(xml, "Description"); } }
+		{ DIR *md = opendir(dir.c_str()); std::string best;
+		  if (md) { while (struct dirent *ce = readdir(md)) { std::string cn = ce->d_name, lower = cn;
+				for (auto &c : lower) c = (char)tolower((unsigned char)c);
+				if (lower.size() > 4 && (lower.substr(lower.size() - 4) == ".png" || lower.substr(lower.size() - 4) == ".jpg")) {
+					if (lower.find("cover") != std::string::npos || lower.find("preview") != std::string::npos) { best = cn; break; }
+					if (best.empty()) best = cn; } } closedir(md); }
+		  if (!best.empty()) m.cover = dir + "/" + best; }
+		out.push_back(m);
+	}
+	closedir(d);
+}
+static bool mods_delete_tree(const std::string &p) {   /* M1749: 撤销导入：删掉整份 MOD 文件 */
+	DIR *d = opendir(p.c_str());
+	if (!d) return remove(p.c_str()) == 0;
+	bool ok = true;
+	while (struct dirent *e = readdir(d)) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+		const std::string a = p + "/" + e->d_name; struct stat st;
+		if (stat(a.c_str(), &st) != 0) { ok = false; continue; }
+		if (S_ISDIR(st.st_mode)) ok = mods_delete_tree(a) && ok;
+		else ok = (remove(a.c_str()) == 0) && ok;
+	}
+	closedir(d);
+	if (rmdir(p.c_str()) != 0) ok = false;
+	return ok;
+}
+static void mods_save(const std::vector<P5dMod> &v) {
+	std::string root = mods_root(); make_dir(root.c_str());
+	FILE *f = fopen((root + "/mods.ini").c_str(), "wb"); if (!f) return;
+	for (const auto &m : v) if (m.enabled) fprintf(f, "enabled=%s\n", path_base(m.dir).c_str());
+	fclose(f);
+}
+static void mods_copy_tree(const std::string &src, const std::string &dst) {   /* (no <filesystem>: win32_compat.h's sync macro) */
+	make_dir(dst.c_str());
+	DIR *d = opendir(src.c_str()); if (!d) return;
+	while (struct dirent *e = readdir(d)) { std::string nm = e->d_name; if (nm == "." || nm == "..") continue;
+		std::string sp = src + "/" + nm, dp = dst + "/" + nm; struct stat st;
+		if (stat(sp.c_str(), &st) != 0) continue;
+		if (st.st_mode & S_IFDIR) mods_copy_tree(sp, dp);
+		else { FILE *in = fopen(sp.c_str(), "rb"); if (!in) continue; FILE *out = fopen(dp.c_str(), "wb");
+			if (!out) { fclose(in); continue; }
+			char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, n, out);
+			fclose(in); fclose(out); } }
+	closedir(d);
+}
+static void mods_import(const std::string &src) {
+	std::string base = path_base(src); std::string root = mods_root(); make_dir(root.c_str());
+	mods_copy_tree(src, root + "/" + base);
+	fprintf(stderr, "mods: imported %s as %s\n", src.c_str(), base.c_str());
+}
+
 /* the app icon on the window (and the Dock / taskbar): assets/brand's, macOS's drawn on its own inset grid */
 static void window_icon(SDL_Window *win) {   /* the port's own icon (assets/p5d), the old brand only as a fallback */
 	const char *cands[] = {"/assets/p5d/png/icon-256.png", "/assets/p5d/png/icon-512.png",
@@ -194,6 +405,414 @@ static void prefs_set(const char *k, const std::string &v) {
 	for (auto &kv : g_prefs) fprintf(f, "%s=%s\n", kv.first.c_str(), kv.second.c_str());
 	fclose(f);
 }
+static void prefs_erase(const char *k) {   /* M1786: drop a key (the remembered ROM folder after 撤銷導入) */
+	g_prefs.erase(k);
+	std::string p = prefs_path(); if (p.empty()) return;
+	FILE *f = fopen(p.c_str(), "w"); if (!f) return;
+	for (auto &kv : g_prefs) fprintf(f, "%s=%s\n", kv.first.c_str(), kv.second.c_str());
+	fclose(f);
+}
+
+#ifdef _WIN32
+/* ---- M1788: 「添加到 Steam 庫」 -- append one non-Steam shortcut to
+ *      <steam>/userdata/<account>/config/shortcuts.vdf
+ * That file is Valve's BINARY KeyValues: 0x00 object "name"\0 children 0x08; 0x01 string; 0x02 int32; 0x07 uint64.
+ * The shortcut's Exe is wscript.exe and its LaunchOptions a stable .vbs which runs the newest extracted launcher:
+ * launcher updates (a new extraction folder) therefore cannot break the Steam entry, and the desktop launcher keeps
+ * working unchanged -- both start the same program.
+ * Steam REWRITES shortcuts.vdf when it exits, so the add only runs while Steam is closed; the existing file is backed
+ * up (shortcuts.vdf.bak) and only appended to (unknown fields are preserved untouched).
+ * Env overrides used by the headless self test: P5D_STEAM_DIR (steam install), P5D_STEAM_STUB_DIR (where the .vbs
+ * goes), P5D_STEAM_ADD=1 (run the add once, no window) and P5D_STEAM_ADD_OUT (write the result there). */
+static uint32_t steam_crc32(const std::string &s) {
+	static uint32_t t[256]; static bool init;
+	if (!init) { init = true; for (uint32_t i = 0; i < 256; i++) { uint32_t c = i; for (int k = 0; k < 8; k++) c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1); t[i] = c; } }
+	uint32_t c = 0xFFFFFFFFu;
+	for (unsigned char ch : s) c = t[(c ^ ch) & 0xFFu] ^ (c >> 8);
+	return c ^ 0xFFFFFFFFu;
+}
+static std::string steam_reg(HKEY root, const char *sub, const char *val) {
+	char buf[2048]; DWORD n = sizeof buf, type = 0;
+	if (RegGetValueA(root, sub, val, RRF_RT_REG_SZ, &type, buf, &n) != ERROR_SUCCESS) return "";
+	std::string s = buf; for (char &c : s) if (c == '/') c = '\\';
+	return s;
+}
+static bool steam_running(void) {
+	HANDLE sn = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (sn == INVALID_HANDLE_VALUE) return false;
+	PROCESSENTRY32 pe; pe.dwSize = sizeof pe; bool run = false;
+	if (Process32First(sn, &pe)) do { if (!_stricmp(pe.szExeFile, "steam.exe")) { run = true; break; } } while (Process32Next(sn, &pe));
+	CloseHandle(sn);
+	return run;
+}
+static std::string steam_read_all(const std::string &p) {
+	std::string b; FILE *f = fopen(p.c_str(), "rb"); if (!f) return b;
+	char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, f)) > 0) b.append(buf, n);
+	fclose(f);
+	return b;
+}
+static void steam_mkdirs(const std::string &p) {
+	for (size_t i = 1; i <= p.size(); i++)
+		if (i == p.size() || p[i] == '\\' || p[i] == '/') {
+			std::string d = p.substr(0, i);
+			if (!d.empty() && !exists(d)) make_dir(d);
+		}
+}
+static void steam_box_blur(SDL_Surface *s, int r, int passes) {   /* RGBA32 only; a cheap blur for the fill behind the art */
+	if (!s || s->format != SDL_PIXELFORMAT_RGBA32 || r < 1) return;
+	const int w = s->w, h = s->h;
+	std::vector<Uint8> tmp((size_t)w * h * 4);
+	for (int p = 0; p < passes; p++) {
+		SDL_LockSurface(s);
+		Uint8 *px = (Uint8 *)s->pixels;
+		const size_t pitch = (size_t)s->pitch;
+		for (int y = 0; y < h; y++) {
+			Uint8 *row = px + y * pitch;
+			for (int x = 0; x < w; x++) {
+				int acc[3] = {0, 0, 0}, n = 0;
+				const int x0 = std::max(0, x - r), x1 = std::min(w - 1, x + r);
+				for (int i = x0; i <= x1; i++) { acc[0] += row[i * 4]; acc[1] += row[i * 4 + 1]; acc[2] += row[i * 4 + 2]; n++; }
+				tmp[((size_t)y * w + x) * 4 + 0] = (Uint8)(acc[0] / n); tmp[((size_t)y * w + x) * 4 + 1] = (Uint8)(acc[1] / n); tmp[((size_t)y * w + x) * 4 + 2] = (Uint8)(acc[2] / n); tmp[((size_t)y * w + x) * 4 + 3] = row[x * 4 + 3];
+			}
+		}
+		for (int y = 0; y < h; y++) memcpy(px + (size_t)y * pitch, &tmp[(size_t)y * w * 4], (size_t)w * 4);
+		for (int x = 0; x < w; x++) {
+			for (int y = 0; y < h; y++) {
+				int acc[3] = {0, 0, 0}, n = 0;
+				const int y0 = std::max(0, y - r), y1 = std::min(h - 1, y + r);
+				for (int i = y0; i <= y1; i++) { const Uint8 *q = px + (size_t)i * pitch + x * 4; acc[0] += q[0]; acc[1] += q[1]; acc[2] += q[2]; n++; }
+				tmp[((size_t)y * w + x) * 4 + 0] = (Uint8)(acc[0] / n); tmp[((size_t)y * w + x) * 4 + 1] = (Uint8)(acc[1] / n); tmp[((size_t)y * w + x) * 4 + 2] = (Uint8)(acc[2] / n); tmp[((size_t)y * w + x) * 4 + 3] = px[(size_t)y * pitch + x * 4 + 3];
+			}
+		}
+		for (int y = 0; y < h; y++) memcpy(px + (size_t)y * pitch, &tmp[(size_t)y * w * 4], (size_t)w * 4);
+		SDL_UnlockSurface(s);
+	}
+}
+/* binary VDF: skip one value of the given type (objects recurse), advancing p past it */
+static bool steam_vdf_skip(const std::string &b, size_t &p, uint8_t type) {
+	switch (type) {
+	case 0x01: while (p < b.size() && b[p]) p++; p++; return p <= b.size();
+	case 0x02: case 0x03: case 0x04: case 0x06: p += 4; return p <= b.size();
+	case 0x07: case 0x0A: p += 8; return p <= b.size();
+	case 0x00: {
+		while (true) {
+			if (p >= b.size()) return false;
+			uint8_t t = (uint8_t)b[p++];
+			if (t == 0x08) return true;
+			while (p < b.size() && b[p]) p++;
+			if (p >= b.size()) return false;
+			p++;   /* the key's NUL */
+			if (!steam_vdf_skip(b, p, t)) return false;
+		}
+	}
+	default: return false;
+	}
+}
+static void steam_vdf_puts(std::string &o, const char *k, const std::string &v) {
+	o += '\x01'; o += k; o += '\0'; o += v; o += '\0';
+}
+static void steam_vdf_puti(std::string &o, const char *k, int32_t v) {
+	o += '\x02'; o += k; o += '\0'; o.append((const char *)&v, 4);
+}
+static std::string steam_shortcut_entry(int idx, const std::string &name, const std::string &exe, const std::string &start, const std::string &args, uint32_t appid) {
+	std::string e; e += '\x00'; e += std::to_string(idx); e += '\0';
+	steam_vdf_puti(e, "appid", (int32_t)appid);
+	steam_vdf_puts(e, "AppName", name);
+	steam_vdf_puts(e, "Exe", exe);
+	steam_vdf_puts(e, "StartDir", start);
+	steam_vdf_puts(e, "icon", "");
+	steam_vdf_puts(e, "ShortcutPath", "");
+	steam_vdf_puts(e, "LaunchOptions", args);
+	steam_vdf_puti(e, "IsHidden", 0);
+	steam_vdf_puti(e, "AllowDesktopConfig", 1);
+	steam_vdf_puti(e, "AllowOverlay", 1);
+	steam_vdf_puti(e, "OpenVR", 0);
+	steam_vdf_puti(e, "Devkit", 0);
+	steam_vdf_puts(e, "DevkitGameID", "");
+	steam_vdf_puti(e, "LastPlayTime", 0);
+	e += '\x08';
+	return e;
+}
+static bool steam_write_all(const std::string &p, const std::string &b) {
+	std::string tmp = p + ".tmp";
+	FILE *f = fopen(tmp.c_str(), "wb");
+	if (!f) return false;
+	size_t w = fwrite(b.data(), 1, b.size(), f);
+	if (fclose(f) != 0 || w != b.size()) { remove(tmp.c_str()); return false; }
+	return MoveFileExA(tmp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+}
+/* append one entry to an existing shortcuts.vdf (or create one); false + why on a malformed file */
+static bool steam_vdf_append(const std::string &path, const std::string &entry, int &count, std::string &why) {
+	std::string b = steam_read_all(path);
+	size_t insert_at; count = 0;
+	if (b.empty()) {   /* a fresh file: 0x00 "shortcuts"\0 0x08 */
+		b = std::string("\x00" "shortcuts" "\0", 11);
+		insert_at = b.size();
+	} else {
+		size_t p = 0;
+		if (b.size() < 2 || (uint8_t)b[p++] != 0x00) { why = "shortcuts.vdf 不是二進位 VDF"; return false; }
+		size_t ks = p; while (p < b.size() && b[p]) p++;
+		if (p >= b.size()) { why = "shortcuts.vdf 損壞（標題）"; return false; }
+		if (b.compare(ks, p - ks, "shortcuts") != 0) { why = "shortcuts.vdf 沒有 shortcuts 節點"; return false; }
+		p++;   /* key NUL */
+		while (true) {
+			if (p >= b.size()) { why = "shortcuts.vdf 損壞（尾端）"; return false; }
+			uint8_t t = (uint8_t)b[p++];
+			if (t == 0x08) { insert_at = p - 1; break; }
+			while (p < b.size() && b[p]) p++;
+			if (p >= b.size()) { why = "shortcuts.vdf 損壞（鍵）"; return false; }
+			p++;
+			count++;
+			if (!steam_vdf_skip(b, p, t)) { why = "shortcuts.vdf 含有不支援的欄位"; return false; }
+		}
+	}
+	if (!b.empty()) {
+		FILE *src = fopen(path.c_str(), "rb");
+		if (src) { std::string bak = path + ".bak"; FILE *dst = fopen(bak.c_str(), "wb"); if (dst) { char buf[65536]; size_t n; while ((n = fread(buf, 1, sizeof buf, src)) > 0) fwrite(buf, 1, n, dst); fclose(dst); } fclose(src); }
+	}
+	std::string out = b.substr(0, insert_at) + entry + b.substr(insert_at);
+	if (!steam_write_all(path, out)) { why = "寫入 shortcuts.vdf 失敗（權限？Steam 正在執行？）"; return false; }
+	return true;
+}
+/* the stable entry point: run the newest extracted launcher, wherever the payload put it */
+static std::string steam_write_stub(const std::string &dir) {
+	steam_mkdirs(dir);
+	const std::string vbs = dir + "\\P5D Launcher.vbs";
+	const char *script =
+		"' P5D port: start the newest extracted launcher (Steam shortcut entry; the desktop launcher keeps working).\r\n"
+		"Option Explicit\r\n"
+		"Dim fso, sh, base, d, f, n, newest, newestPath\r\n"
+		"Set fso = CreateObject(\"Scripting.FileSystemObject\")\r\n"
+		"Set sh = CreateObject(\"WScript.Shell\")\r\n"
+		"base = sh.ExpandEnvironmentStrings(\"%LOCALAPPDATA%\") & \"\\P5D-Port\"\r\n"
+		"newestPath = \"\"\r\n"
+		"If fso.FolderExists(base) Then\r\n"
+		"  For Each d In fso.GetFolder(base).SubFolders\r\n"
+		"    For Each f In d.Files\r\n"
+		"      n = LCase(f.Name)\r\n"
+		"      If Left(n, 4) = \"p5d \" And Right(n, 4) = \".exe\" And InStr(n, \"bak\") = 0 Then\r\n"
+		"        If newestPath = \"\" Then\r\n"
+		"          newestPath = f.Path : newest = f.DateLastModified\r\n"
+		"        ElseIf f.DateLastModified > newest Then\r\n"
+		"          newestPath = f.Path : newest = f.DateLastModified\r\n"
+		"        End If\r\n"
+		"      End If\r\n"
+		"    Next\r\n"
+		"  Next\r\n"
+		"End If\r\n"
+		"If newestPath = \"\" Then\r\n"
+		"  MsgBox \"P5D launcher not found. Run P5D Windows launcher from the release package again.\", 48, \"P5D\"\r\n"
+		"Else\r\n"
+		"  sh.Run \"\"\"\" & newestPath & \"\"\"\", 1, False\r\n"
+		"End If\r\n";
+	FILE *f = fopen(vbs.c_str(), "wb");
+	if (!f) return "";
+	fwrite(script, 1, strlen(script), f);
+	fclose(f);
+	return vbs;
+}
+/* M1789/M1790/M1791/M1792: the Steam art, generated at the moment 「添加到 Steam 庫」 runs from the player's own built
+ * game -- NOTHING is bundled in the launcher, only this generation code is:
+ *   <appid>p.png            600x900 portrait cover, from the livearea bg0.png: a sharp cover crop anchored to the RIGHT
+ *                           (the picture is landscape; the centre slice showed only hands/coat, the right one shows Joker)
+ *   <appid>.png             920x430 wide capsule ("grid"), from pic0.png
+ *   <appid>_hero.png        1920x620 game-page background, from bg0.png: sharp cover crop anchored to the TOP (a middle
+ *                           crop cut Morgana's and Joker's heads) + the bottom vignette
+ *   <appid>_header.png      460x215 legacy header, from pic0.png
+ *   <appid>_p.png           legacy portrait name (kept for older Steam)
+ * Both the signed and the unsigned appid spelling are written (tools differ on which one names the files); PNG only. */
+static bool steam_cover_images(const std::string &title_art, const std::string &char_art, const std::string &griddir, uint32_t appid, std::string &why) {
+	SDL_Surface *src = SDL_LoadPNG(title_art.c_str());
+	if (!src) { why = "讀不到封面圖 " + title_art; return false; }
+	SDL_Surface *himg = char_art.empty() ? nullptr : SDL_LoadPNG(char_art.c_str());
+	steam_mkdirs(griddir);
+	SDL_Surface *blurred = SDL_ConvertSurface(src, SDL_PIXELFORMAT_RGBA32);
+	if (blurred) steam_box_blur(blurred, 6, 2);
+	const std::string ids[2] = {std::to_string((int32_t)appid), std::to_string((uint32_t)appid)};
+	bool ok = false;
+	auto save = [&](SDL_Surface *s, const char *suffix) {
+		if (!s) return;
+		for (const std::string &id : ids) if (SDL_SavePNG(s, (griddir + "\\" + id + suffix).c_str())) ok = true;
+	};
+	auto darkened = [](SDL_Surface *s) {
+		if (SDL_Surface *b = SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32)) {
+			SDL_LockSurface(b);
+			for (int y = 0; y < b->h; y++) {
+				Uint8 *row = (Uint8 *)b->pixels + (size_t)y * b->pitch;
+				for (int x = 0; x < b->w; x++) { row[x * 4 + 0] = (Uint8)(row[x * 4 + 0] * 110 / 255); row[x * 4 + 1] = (Uint8)(row[x * 4 + 1] * 110 / 255); row[x * 4 + 2] = (Uint8)(row[x * 4 + 2] * 110 / 255); }
+			}
+			SDL_UnlockSurface(b);
+			SDL_DestroySurface(s);
+			return b;
+		}
+		return s;
+	};
+	auto bottom_vignette = [](SDL_Surface *s, int alpha) {
+		SDL_LockSurface(s);
+		for (int y = 0; y < s->h; y++) {
+			const float t = ((float)y / (s->h - 1) - 0.55f) / 0.45f;
+			if (t <= 0) continue;
+			const float f = std::max(0.0f, 1.0f - (alpha / 255.0f) * t);
+			Uint8 *row = (Uint8 *)s->pixels + (size_t)y * s->pitch;
+			for (int x = 0; x < s->w; x++) { row[x * 4 + 0] = (Uint8)(row[x * 4 + 0] * f); row[x * 4 + 1] = (Uint8)(row[x * 4 + 1] * f); row[x * 4 + 2] = (Uint8)(row[x * 4 + 2] * f); }
+		}
+		SDL_UnlockSurface(s);
+	};
+	auto cover_of = [&](SDL_Surface *s, int W, int H, float anchorY, float anchorX = 0.5f) -> SDL_Surface * {
+		if (!s || s->w <= 0 || s->h <= 0) return nullptr;
+		float k = std::max((float)W / s->w, (float)H / s->h);
+		int sw = (int)std::ceil(s->w * k), sh = (int)std::ceil(s->h * k);
+		SDL_Surface *sc = SDL_ScaleSurface(s, sw, sh, SDL_SCALEMODE_LINEAR);
+		if (!sc) return nullptr;
+		SDL_Surface *d = SDL_CreateSurface(W, H, SDL_PIXELFORMAT_RGBA32);
+		if (d) { SDL_Rect sr{ (int)((sw - W) * anchorX), (int)((sh - H) * anchorY), W, H }; if (!SDL_BlitSurface(sc, &sr, d, nullptr)) { SDL_DestroySurface(d); d = nullptr; } }
+		SDL_DestroySurface(sc);
+		return d;
+	};
+	do {
+		if (src->w <= 0 || src->h <= 0) break;
+		if (himg) {
+			if (SDL_Surface *cov = cover_of(himg, 600, 900, 0.5f, 1.0f)) {
+				save(cov, "p.png");
+				save(cov, "_p.png");
+				SDL_DestroySurface(cov);
+			}
+		} else {   /* no bg0.png: the title art over its own blurred fill */
+			const int CW = 600, CH = 900, TW = 600, TH = 340;
+			SDL_Surface *canvas = SDL_CreateSurface(CW, CH, SDL_PIXELFORMAT_RGBA32);
+			if (!canvas) break;
+			SDL_FillSurfaceRect(canvas, nullptr, SDL_MapSurfaceRGBA(canvas, 0, 0, 0, 255));
+			if (blurred) {
+				const float cover = std::max((float)CW / blurred->w, (float)CH / blurred->h);
+				const int bw = (int)std::ceil(blurred->w * cover), bh = (int)std::ceil(blurred->h * cover);
+				if (SDL_Surface *bg = SDL_ScaleSurface(blurred, bw, bh, SDL_SCALEMODE_LINEAR)) {
+					SDL_Surface *b32 = darkened(bg);
+					if (b32) { SDL_Rect br{ (bw - CW) / 2, (bh - CH) / 2, CW, CH }; SDL_BlitSurface(b32, &br, canvas, nullptr); SDL_DestroySurface(b32); }
+				}
+			}
+			if (SDL_Surface *thumb = SDL_ScaleSurface(src, TW, TH, SDL_SCALEMODE_LINEAR)) {
+				SDL_Rect tr{ 0, (CH - TH) / 2, TW, TH };
+				SDL_BlitSurface(thumb, nullptr, canvas, &tr);
+				SDL_DestroySurface(thumb);
+			}
+			save(canvas, "p.png");
+			save(canvas, "_p.png");
+			SDL_DestroySurface(canvas);
+		}
+
+		if (SDL_Surface *wide = cover_of(src, 920, 430, 0.5f)) { save(wide, ".png"); SDL_DestroySurface(wide); }
+
+		if (himg) {
+			if (SDL_Surface *hero = cover_of(himg, 1920, 620, 0.0f)) {
+				bottom_vignette(hero, 120);
+				save(hero, "_hero.png");
+				SDL_DestroySurface(hero);
+			}
+		} else {
+			SDL_Surface *hero = SDL_CreateSurface(1920, 620, SDL_PIXELFORMAT_RGBA32);
+			if (hero) {
+				SDL_FillSurfaceRect(hero, nullptr, SDL_MapSurfaceRGBA(hero, 0, 0, 0, 255));
+				if (blurred) {
+					const float hc = std::max(1920.0f / blurred->w, 620.0f / blurred->h);
+					const int hw = (int)std::ceil(blurred->w * hc), hh = (int)std::ceil(blurred->h * hc);
+					if (SDL_Surface *big = SDL_ScaleSurface(blurred, hw, hh, SDL_SCALEMODE_LINEAR)) {
+						SDL_Surface *b32 = darkened(big);
+						if (b32) { SDL_Rect br{ (hw - 1920) / 2, (hh - 620) / 2, 1920, 620 }; SDL_BlitSurface(b32, &br, hero, nullptr); SDL_DestroySurface(b32); }
+					}
+				}
+				const int fh = 620, fw = (int)std::ceil(src->w * (620.0f / src->h));
+				if (SDL_Surface *fg = SDL_ScaleSurface(src, fw, fh, SDL_SCALEMODE_LINEAR)) {
+					SDL_Rect fr{ (1920 - fw) / 2, 0, fw, fh };
+					SDL_BlitSurface(fg, nullptr, hero, &fr);
+					SDL_DestroySurface(fg);
+				}
+				save(hero, "_hero.png");
+				SDL_DestroySurface(hero);
+			}
+		}
+
+		if (SDL_Surface *hd = cover_of(src, 460, 215, 0.5f)) { save(hd, "_header.png"); SDL_DestroySurface(hd); }
+	} while (0);
+	if (himg) SDL_DestroySurface(himg);
+	if (blurred) SDL_DestroySurface(blurred);
+	SDL_DestroySurface(src);
+	if (!ok) why = "封面圖生成失敗（" + title_art + "）";
+	return ok;
+}
+static bool p5d_steam_add(std::string &msg) {
+	/* only a BUILT game can be added: the art comes from its own files and the entry runs a launcher for a game that must
+	 * exist. The button is disabled too; this is the safety net. Paths are built from g_dump at click time, so a library
+	 * moved with 「遊戲存放位置」 just works. */
+	const std::string host_exe = g_dump + "/decrypted/PCSH10109/recomp/game_host_min.exe";
+	if (!exists(host_exe)) { msg = "遊戲尚未構建，無法添加到 Steam 庫：請先完成構建（見主頁 ④）。"; return false; }
+	std::string steam = getenv("P5D_STEAM_DIR") ? getenv("P5D_STEAM_DIR") : "";
+	if (steam.empty()) steam = steam_reg(HKEY_CURRENT_USER, "Software\\Valve\\Steam", "SteamPath");
+	if (steam.empty()) steam = steam_reg(HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\Valve\\Steam", "InstallPath");
+	if (steam.empty()) steam = steam_reg(HKEY_LOCAL_MACHINE, "SOFTWARE\\Valve\\Steam", "InstallPath");
+	if (steam.empty()) {
+		const char *cands[] = {"C:\\Program Files (x86)\\Steam", "C:\\Program Files\\Steam", "D:\\Steam", "D:\\steam", "E:\\Steam", "E:\\steam"};
+		for (const char *c : cands) if (exists(std::string(c) + "\\steam.exe")) { steam = c; break; }
+	}
+	if (steam.empty() || !exists(steam + "\\steam.exe")) { msg = "找不到 Steam 安裝位置：請先安裝並登入 Steam，或用「添加非 Steam 遊戲」手動加入。"; return false; }
+	if (!getenv("P5D_STEAM_DIR") && steam_running()) { msg = "Steam 正在執行：Steam 結束時會覆寫快捷方式檔案，請先完全退出 Steam，再點一次。"; return false; }
+	std::string stub_dir = getenv("P5D_STEAM_STUB_DIR") ? getenv("P5D_STEAM_STUB_DIR") : "";
+	if (stub_dir.empty()) { const char *la = getenv("LOCALAPPDATA"); if (!la || !*la) { msg = "找不到 LOCALAPPDATA（Steam 入口腳本的位置）"; return false; } stub_dir = std::string(la) + "\\P5D-Port\\P5D"; }
+	const std::string vbs = steam_write_stub(stub_dir);
+	if (vbs.empty()) { msg = "無法建立 Steam 入口腳本（" + stub_dir + "）"; return false; }
+	char win[MAX_PATH] = ""; GetWindowsDirectoryA(win, MAX_PATH);
+	const std::string exe = std::string(win) + "\\System32\\wscript.exe";
+	const std::string args = "\"" + vbs + "\"";
+	const std::string start = stub_dir;
+	const std::string name = "P5D Windows移植版";
+	std::vector<std::string> accounts;
+	if (DIR *d = opendir((steam + "\\userdata").c_str())) {
+		while (dirent *e = readdir(d)) {
+			std::string n = e->d_name;
+			if (n.empty() || n[0] < '0' || n[0] > '9') continue;
+			if (exists(steam + "\\userdata\\" + n + "\\config")) accounts.push_back(n);
+		}
+		closedir(d);
+	}
+	if (accounts.empty()) { msg = "Steam 沒有任何已登入的使用者資料（先登入一次 Steam 再試）"; return false; }
+	int wrote = 0, skipped = 0, covers = 0; std::string last_why, cover_why;
+	const uint32_t appid = steam_crc32(exe + name) | 0x80000000u;
+	const std::string pic0a = g_dump + "/decrypted/PCSH10109/recomp/fs/app0/sce_sys/pic0.png";
+	const std::string pic0b = g_dump + "/decrypted/PCSH10109/app0/sce_sys/pic0.png";
+	const std::string pic0 = exists(pic0a) ? pic0a : (exists(pic0b) ? pic0b : "");
+	const std::string bg0a = g_dump + "/decrypted/PCSH10109/recomp/fs/app0/sce_sys/livearea/contents/bg0.png";
+	const std::string bg0b = g_dump + "/decrypted/PCSH10109/app0/sce_sys/livearea/contents/bg0.png";
+	const std::string char_art = exists(bg0a) ? bg0a : (exists(bg0b) ? bg0b : "");
+	for (const std::string &acc : accounts) {
+		const std::string path = steam + "\\userdata\\" + acc + "\\config\\shortcuts.vdf";
+		const std::string have = steam_read_all(path);
+		if (have.find(name) != std::string::npos) skipped++;
+		else {
+			std::string why;
+			int count = 0, idx = 0;
+			{   /* count existing top-level entries */
+				std::string b = have; size_t p = 0;
+				if (!b.empty() && (uint8_t)b[0] == 0x00) {
+					p = 1; while (p < b.size() && b[p]) p++; p++;
+					while (p < b.size()) { uint8_t t = (uint8_t)b[p++]; if (t == 0x08) break; while (p < b.size() && b[p]) p++; p++; idx++; if (!steam_vdf_skip(b, p, t)) break; }
+				}
+			}
+			const std::string e2 = steam_shortcut_entry(idx, name, exe, start, args, appid);
+			if (steam_vdf_append(path, e2, count, why)) wrote++;
+			else last_why = why;
+		}
+		if (!pic0.empty() || !char_art.empty()) {
+			if (steam_cover_images(pic0.empty() ? char_art : pic0, char_art, steam + "\\userdata\\" + acc + "\\config\\grid", appid, cover_why)) covers++;
+		}
+	}
+	if (covers == 0 && !cover_why.empty()) last_why += (last_why.empty() ? "" : "；") + cover_why;
+	const std::string art = covers > 0 ? "，封面圖已生成" : "（找不到遊戲封面圖，未生成封面）";
+	if (wrote > 0) { msg = "已添加到 Steam 庫（" + std::to_string(wrote) + " 個帳號" + art + "）：重新啟動 Steam 後，在「收藏庫」裡啟動「" + name + "」。桌面啟動器仍然可以照常使用。"; return true; }
+	if (skipped > 0) { msg = "已在 Steam 庫中（無需重複添加" + art + "）。桌面啟動器仍然可以照常使用。"; return true; }
+	msg = "添加失敗：" + last_why;
+	return false;
+}
+#endif   /* _WIN32 */
+
 
 /* ---- a child process: its output (stdout and stderr together) read through a pipe; killed with everything it started
  * (POSIX: its own process group; Windows: a job object holding the process tree) */
@@ -221,11 +840,15 @@ static bool proc_start(Proc &p, const std::vector<std::string> &argv, const std:
 	if (!CreatePipe(&rd, &wr, &sa, 0)) return false;
 	SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
 	std::wstring cmd; for (const std::string &a : argv) { if (!cmd.empty()) cmd += L' '; cmd += win_arg(wide(a)); }
+	std::vector<std::string> env_all = env;   /* M1735: the library folder goes in explicitly -- _putenv_s alone did not
+	                                           * reach the child's OS environment block, so a build after changing the folder
+	                                           * still wrote into the old library */
+	if (!g_dump.empty()) env_all.push_back("ATIV_DUMP=" + g_dump);
 	std::wstring block;   /* the launcher's environment with the step's NAME=value settings over it */
-	if (!env.empty()) {
+	{
 		std::vector<std::wstring> vars;
 		if (wchar_t *e = GetEnvironmentStringsW()) { for (wchar_t *v = e; *v; v += wcslen(v) + 1) vars.push_back(v); FreeEnvironmentStringsW(e); }
-		for (const std::string &kv : env) {
+		for (const std::string &kv : env_all) {
 			std::wstring w = wide(kv), k = w.substr(0, w.find(L'=') + 1);
 			vars.erase(std::remove_if(vars.begin(), vars.end(), [&](const std::wstring &v) { return _wcsnicmp(v.c_str(), k.c_str(), k.size()) == 0; }), vars.end());
 			vars.push_back(w);
@@ -237,7 +860,7 @@ static bool proc_start(Proc &p, const std::vector<std::string> &argv, const std:
 	PROCESS_INFORMATION pi = {};
 	std::wstring dir = wide(g_root);
 	BOOL ok = CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, TRUE, CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-	                         env.empty() ? nullptr : &block[0], dir.c_str(), &si, &pi);
+	                         &block[0], dir.c_str(), &si, &pi);
 	CloseHandle(wr); if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
 	if (!ok) { CloseHandle(rd); return false; }
 	p.job = CreateJobObjectW(nullptr, nullptr);
@@ -975,9 +1598,9 @@ static bool game_key(const std::string &k) {   /* (settings.c's game_key: kept i
 /* the shared keys' defaults where a game reads no value (runtime/core/settings.h; the consumers' own) */
 static const char *setting_default(const std::string &k) {
 	static const std::pair<const char *, const char *> d[] = {{"render_scale", "1"}, {"fullscreen", "0"}, {"aspect_ratio", "native"}, {"hud_layout", "edges"},
-		{"aspect", "fit"}, {"frame_rate", "30"}, {"post_aa", "1"}, {"sharpen", "0.35"}, {"anisotropy", "16"}, {"shadow_filter", "1"}, {"full_res_world", "1"},
+		{"aspect", "fit"}, {"frame_rate", "30"}, {"post_aa", "1"}, {"sharpen", "0.35"}, {"vibrance", "0"}, {"anisotropy", "16"}, {"shadow_filter", "1"}, {"full_res_world", "1"},
 		{"ssao", "1"}, {"ssao_strength", "1"}, {"osd", "0"}, {"input_mode", "auto"}, {"mouse_look", "1"}, {"raw_look", "1"}, {"mouse_sens", "1"},
-		{"mouse_invert", "0"}, {"shoulder_buttons", "triggers"}, {"touch_cursor_speed", "1"}, {"gyro", "1"}, {"gyro_pose", "upright"}, {"gyro_sens", "1"}, {"volume", "1"}, {"online_id", ""}, {"online", "1"},
+		{"mouse_invert", "0"}, {"shoulder_buttons", "bumpers"}, {"touch_cursor_speed", "1"}, {"gyro", "1"}, {"gyro_pose", "upright"}, {"gyro_sens", "1"}, {"volume", "1"}, {"online_id", ""}, {"online", "1"},
 		{"camera", "light"}, {"save_dialog", "ask"}, {"audio_sync_trim_ms", "0"}, {"audio_buffers", "1"}};
 	for (auto &e : d) if (k == e.first) return e.second;
 	return nullptr;
@@ -1146,6 +1769,7 @@ static std::string online_tag(Ini &shared) {
 	return tag;
 }
 static void settings_modal(void) {
+	game_folder_move_poll();
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
 	if (g_settings_open && !ImGui::IsPopupOpen("Settings")) { ImGui::OpenPopup("Settings"); g_shared = ini_load(shared_path()); }
@@ -1157,9 +1781,9 @@ static void settings_modal(void) {
 	ui::heading("Settings", em * 1.4f);
 	ui::muted_wrapped("For every game. A game reads them when it starts; its own menu (F10) changes them too, for every game. A game's own options, and any value it keeps for itself, are under Game settings on its card.");
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
-	static const char *const tabs[] = {"Display##st", "Controls##st", "Sound & online##st"};
-	ui::segmented(tabs, 3, &g_settings_tab); tab_hint();
-	g_settings_tab = (g_settings_tab + tab_step() + 3) % 3;
+	static const char *const tabs[] = {"Display##st", "Controls##st", "Sound & online##st", "Storage##st"};
+	ui::segmented(tabs, 4, &g_settings_tab); tab_hint();
+	g_settings_tab = (g_settings_tab + tab_step() + 4) % 4;
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
 	SetTarget t{&g_shared, shared_path(), SHARED_HEADER};
 	ImGui::BeginChild("settings_rows", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - em * 0.4f), 0);
@@ -1178,6 +1802,7 @@ static void settings_modal(void) {
 			seg_row(t, "Frame rate", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.", "frame_rate", "30", {{"30", "30"}, {"60", "60"}});
 			toggle_row(t, "Anti-aliasing", "Smooths jagged edges (FXAA).", "post_aa", true);
 			slider_row(t, "Sharpening", "Brings back detail lost to scaling and anti-aliasing.", "sharpen", 0.35, 0.0f, 100.0f, "%.0f%%", 100.0f);
+			slider_row(t, "Dynamic Vibrance", "Our built-in vibrance: lifts dull colours without clipping saturated ones (0 = off).", "vibrance", 0, 0.0f, 100.0f, "%.0f%%");
 			seg_row(t, "Texture filtering", "Keeps textures crisp when seen at an angle.", "anisotropy", "16", {{"1", "Off"}, {"2", "2×"}, {"4", "4×"}, {"8", "8×"}, {"16", "16×"}});
 			seg_row(t, "Shadow edges", "How soft the edges of shadows are.", "shadow_filter", "1", {{"0", "Original"}, {"1", "Soft"}, {"2", "Softer"}});
 			toggle_row(t, "Full-resolution world", "Games that draw their 3D world below the screen's resolution draw it at the full one. Sharper, at a GPU cost.", "full_res_world", true);
@@ -1190,12 +1815,12 @@ static void settings_modal(void) {
 			seg_row(t, "Mouse aim", "Direct: the game turns exactly as far as the mouse moves (Uncharted, Unit 13, Killzone). Stick: the mouse moves the right stick. F8 switches in a game.", "raw_look", "1", {{"1", "Direct"}, {"0", "Stick"}});
 			slider_row(t, "Mouse sensitivity", nullptr, "mouse_sens", 1.0, 0.1f, 5.0f, "%.2f×", 1, ImGuiSliderFlags_Logarithmic);
 			toggle_row(t, "Invert vertical look", nullptr, "mouse_invert", false);
-			seg_row(t, "L and R buttons", "The shoulder pair that is the game's L and R (aim and fire in a shooter). The other pair holds the touch cursor, or is L2 and R2 in a PS TV layout.", "shoulder_buttons", "triggers", {{"triggers", "Triggers (L2 / R2)"}, {"bumpers", "Bumpers (L1 / R1)"}});
+			seg_row(t, "L and R buttons", "The shoulder pair that is the game's L and R (aim and fire in a shooter). The other pair holds the touch cursor, or is L2 and R2 in a PS TV layout.", "shoulder_buttons", "bumpers", {{"bumpers", "Bumpers (L1 / R1)"}, {"triggers", "Triggers (L2 / R2)"}});
 			slider_row(t, "Touch cursor speed", "Hold the shoulder pair that isn't L and R, and move a stick: the cursor is a finger on the touch screen.", "touch_cursor_speed", 1.0, 0.25f, 3.0f, "%.2f×");
 			toggle_row(t, "Gyro", "A controller's gyro as the Vita's motion sensor.", "gyro", true);
 			seg_row(t, "A level controller is a Vita held", "Upright, as in your hands, or flat on a table.", "gyro_pose", "upright", {{"upright", "Upright"}, {"flat", "Flat"}});
 			slider_row(t, "Gyro sensitivity", nullptr, "gyro_sens", 1.0, 0.25f, 3.0f, "%.2f×");
-		} else {
+		} else if (g_settings_tab == 2) {
 			slider_row(t, "Volume", nullptr, "volume", 1.0, 0.0f, 100.0f, "%.0f%%", 100.0f);
 			toggle_row(t, "Play online", ONLINE_EXPL, "online", true);
 			{ const std::string st = online_status_line(); if (!st.empty()) ui::muted_wrapped(st.c_str()); }
@@ -1208,6 +1833,23 @@ static void settings_modal(void) {
 				if (!ok) ui::muted_wrapped("Not saved: up to 10 letters, digits, '-' or '_'");
 				else if (oid.empty()) ui::muted_wrapped(("Empty: you play as ntv_" + online_tag(*t.x) + ", a tag made for this computer.").c_str());
 			}
+		} else if (g_settings_tab == 3) {
+			ui::heading("Game folder", em * 1.15f);
+			ui::muted_wrapped("The whole game after building: the program, its saves, the firmware and the MODs. The default is this computer's app data folder; changing it later starts a new, empty library, so the game and firmware have to be imported there again.");
+			ImGui::Dummy(ImVec2(0, em * 0.35f));
+			ImGui::TextDisabled("Current folder");
+			ImGui::TextWrapped("%s", g_dump.c_str());
+			ImGui::Dummy(ImVec2(0, em * 0.2f));
+			ImGui::BeginDisabled(g_task.running);
+			if (ImGui::Button("Change folder…")) change_game_folder();
+			ImGui::SameLine();
+			if (ImGui::Button("Use default")) change_to_default_folder();
+			ImGui::SameLine();
+			if (ImGui::Button("Open folder")) open_folder(g_dump);
+			ImGui::EndDisabled();
+			ImGui::Dummy(ImVec2(0, em * 0.2f));
+			ui::muted_wrapped(("Default: " + library_default_dir()).c_str());
+			ui::muted_wrapped("Keep it on a local drive with space for several gigabytes. A folder inside the game's own download, or one this copy cannot write, is refused when it is used.");
 		}
 		ui::rows_end();
 	}
@@ -1449,6 +2091,13 @@ static void setup_modal(SDL_Window *win) {
 			if (ui::primary_button("Install firmware")) task_start("Installing the firmware", "firmware", "", {step("Decrypting the system update", vitarecomp({"firmware", g_fw_path})), step("Installed")});
 			ImGui::EndDisabled();
 		}
+		ImGui::Dummy(ImVec2(0, em * 0.35f));
+		ImGui::TextDisabled("Game files folder (optional)");
+		ImGui::TextWrapped("%s", g_dump.c_str());
+		if (ImGui::Button("Change…")) change_game_folder();
+		ImGui::SameLine();
+		if (ImGui::Button("Use default")) change_to_default_folder();
+		ui::muted_wrapped("Leave it as it is to use the default. Changing it later starts an empty library.");
 		ImGui::Dummy(ImVec2(0, em * 0.2f)); task_line();
 		ImGui::Dummy(ImVec2(0, em * 0.5f));
 		if (g_task.running) ui::muted_wrapped("It carries on in the background: continue whenever you like.");
@@ -1617,6 +2266,7 @@ static void game_card(const Game &g, float w, float name_h) {
 
 /* ---- the window */
 static void hub_ui(SDL_Window *win) {
+	game_folder_move_poll();
 	if (p5d_mode()) { p5d_ui(win); return; }
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
@@ -1776,12 +2426,12 @@ static bool p5d_mode(void) {
 #endif
 }
 static const char *const P5D_TITLE = "P5D Windows移植版启动器";
-/* the release's version: the payload's version.txt ("v0.1.1-p5d-HEAD+hash": the part before the first '-'); a dev tree has
+/* the release's version: the payload's version.txt ("v0.1.5-p5d-HEAD+hash": the part before the first '-'); a dev tree has
  * no version.txt and says the release version this source belongs to. Shown beside the page subtitle (M1642). */
 static const std::string &p5d_version(void) {
 	static std::string v;
 	if (!v.empty()) return v;
-	v = "v0.1.1";
+	v = "v0.2.2";   /* (M1793: the version this source belongs to; a release's payload version.txt overrides it) */
 	if (FILE *f = fopen((g_root + "/version.txt").c_str(), "rb")) {
 		char b[128]; size_t n = fread(b, 1, sizeof b - 1, f); fclose(f); b[n] = 0;
 		std::string t(b); size_t e = t.find_first_of("-\r\n");
@@ -1790,7 +2440,63 @@ static const std::string &p5d_version(void) {
 	}
 	return v;
 }   /* the exe's and window's name (the game's own name stays in the page subtitle) */
+
+/* ---- M1645: the frame-generation panel. NVIDIA Smooth Motion is a driver-level AI frame interpolator for RTX 40/50 on
+ * DirectX 11/12 and Vulkan applications (NVIDIA App > Graphics > Program settings > Driver settings > Smooth Motion). This
+ * port is already a Vulkan application, so it needs no game-side DLSS code: the panel reports the GPU/driver via nvidia-smi,
+ * copies the built game executable's path (the program to add in NVIDIA App) and opens NVIDIA App. */
+struct P5dFgProbe { bool done = false, nv = false, app = false; std::string gpu, driver, app_path; };
+static P5dFgProbe g_fg;
+static std::string p5d_run_capture(const std::vector<std::string> &argv) {
+	std::string out; Proc p;
+	if (!proc_start(p, argv, {})) return out;
+	char b[512]; long n; while ((n = proc_read(p, b, sizeof b)) > 0) out.append(b, (size_t)n);
+	proc_wait(p); proc_done(p);
+	return out;
+}
+static const P5dFgProbe &p5d_fg(void) {
+	if (g_fg.done) return g_fg;
+	g_fg = P5dFgProbe(); g_fg.done = true;
+#ifdef _WIN32
+	for (const char *p : {"C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\CEF\\NVIDIA App.exe",
+	                      "C:\\Program Files\\NVIDIA Corporation\\NVIDIA App\\NVIDIA App.exe"}) {
+		struct stat st; if (!g_fg.app && stat(p, &st) == 0) { g_fg.app = true; g_fg.app_path = p; }
+	}
+#endif
+	const char *cands[] = {
+#ifdef _WIN32
+		"C:\\Windows\\System32\\nvidia-smi.exe",
+		"C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe",
+#endif
+		"nvidia-smi" };
+	std::string raw;
+	for (const char *c : cands) { raw = p5d_run_capture({c, "--query-gpu=name,driver_version", "--format=csv,noheader"}); if (!raw.empty()) break; }
+	for (size_t a = 0; a < raw.size() && !g_fg.nv; ) {
+		size_t e = raw.find('\n', a); if (e == std::string::npos) e = raw.size();
+		std::string line = raw.substr(a, e - a);
+		while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+		size_t c = line.rfind(',');
+		if (c != std::string::npos) {
+			std::string gpu = line.substr(0, c), drv = line.substr(c + 1);
+			while (!drv.empty() && drv.front() == ' ') drv.erase(drv.begin());
+			if (!gpu.empty()) { g_fg.gpu = gpu; g_fg.driver = drv; g_fg.nv = true; }
+		}
+		a = e + 1;
+	}
+	return g_fg;
+}
+static void p5d_open_path(const std::string &path) {   /* the shell's "open": NVIDIA App (or a folder) */
+#ifdef _WIN32
+	ShellExecuteA(nullptr, "open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+	SDL_OpenURL(("file://" + path).c_str());
+#endif
+}
 static std::string g_p5d_rom_path;      /* the folder the player picked: a copy of their game */
+static std::string g_p5d_rom_tried;     /* the path an import was started for in this session ("" until a real pick) */
+static bool g_p5d_undo_ask;             /* the 撤銷導入 confirmation popup is open */
+static std::string g_p5d_steam_msg;     /* the last 添加到 Steam 庫 result (shown under the button) */
+static bool g_p5d_steam_ok;
 static std::string g_p5d_fw_path;       /* the .PUP they picked: the Vita system software */
 static const Game *p5d_game(void) {
 	for (const Game &g : g_games) if (g.id == "PCSH10109") return &g;
@@ -1811,6 +2517,16 @@ static int p5d_fps_index(void) {   /* the remembered choice (prefs launcher.ini:
 }
 static bool p5d_show_fps(void) {   /* prefs launcher.ini: p5d_show_fps = 1 shows the runtime's top-left FPS overlay */
 	const std::string r = g_prefs.count("p5d_show_fps") ? g_prefs["p5d_show_fps"] : std::string("0");
+	return r == "1";
+}
+static int p5d_vibrance(void) {   /* prefs launcher.ini: p5d_vibrance = 0..100 (0 = off), the runtime's dynamic vibrance */
+	const std::string r = g_prefs.count("p5d_vibrance") ? g_prefs["p5d_vibrance"] : std::string("0");
+	int v = atoi(r.c_str()); if (v < 0) v = 0; if (v > 100) v = 100; return v;
+}
+static bool p5d_fg_present(void) {   /* prefs launcher.ini: p5d_fg_present = 1 launches the game with RECOMP_FG_PRESENT=1
+                                      * (present only fresh frames, so the driver's AI interpolator has frames to work from;
+                                      * the panel's checkbox; M1646) */
+	const std::string r = g_prefs.count("p5d_fg_present") ? g_prefs["p5d_fg_present"] : std::string("0");
 	return r == "1";
 }
 static void p5d_font(ImGuiIO &io) {   /* the system's Chinese face (nothing shipped): Microsoft YaHei, else any CJK sans */
@@ -1837,6 +2553,26 @@ static void p5d_start_build(void) {
 	build_steps(steps, "PCSH10109");   /* analyse, recompile, compile: the same "@@" steps the hub's card runs */
 	task_start("構建 女神異聞錄5：星夜熱舞", "build", "PCSH10109", steps);
 }
+static void p5d_start_import(void) {
+	/* M1783: decrypt + import ONLY (the button was later removed at the owner's request: picking the folder does it). */
+	std::vector<Step> steps;
+	steps.push_back(step("導入遊戲拷貝（解密）", vitarecomp({"add", g_p5d_rom_path, "--no-build"})));
+	steps.push_back(step("導入（生成 ELF 與版本）", vitarecomp({"import", "PCSH10109"})));
+	task_start("僅導入 女神異聞錄5：星夜熱舞", "import", "PCSH10109", steps);
+}
+static void p5d_undo_import(void) {
+	/* M1786: drop the IMPORT ONLY -- elf/ (the decrypted main ELF the ① status and the recompile read) and version (the
+	 * recorded game version). The built game (recomp/), its fs (saves) and app0 are kept, so the game stays playable; the
+	 * ① line returns to 未導入 and the folder picker can import again. Added because the importer could not otherwise be
+	 * re-tested on a machine whose game was already imported and built. */
+	const std::string w = g_dump + "/decrypted/PCSH10109";
+	mods_delete_tree(w + "/elf");
+	remove((w + "/version").c_str());
+	g_p5d_rom_path.clear();
+	prefs_erase("p5d_rom_path");
+	library_scan();
+	fprintf(stderr, "p5d: import undone (elf/ and version removed; recomp/, fs/ and app0 kept)\n");
+}
 static void p5d_start_play(int res) {
 	/* straight in: no "is the build up to date" check (there is no online update channel: the exe a player
 	 * downloaded brought its own build; the rebuild button covers a new launcher version) */
@@ -1845,6 +2581,12 @@ static void p5d_start_play(int res) {
 	 * had an older build - the operation logic we keep fixing stayed stale for them (reported 2026-11-07). */
 	Step chk = step("CHECKING THE GAME BUILD", vitarecomp({"ready", "PCSH10109"}));
 	Step run = step("運行遊戲", vitarecomp({"run", "PCSH10109"}));
+	/* M1646: a launcher update may bring new runtime code (this round: the AI-interpolation present mode). The game binary is
+	 * the player's own build, so it must be rebuilt for that code to reach it - do it here when the payload's content hash no
+	 * longer matches the build stamp, instead of only hinting at it (players ran the old binary and saw no change). */
+	std::vector<Step> play_steps{chk};
+	if (p5d_build_stale()) play_steps.push_back(step("更新遊戲構建", vitarecomp({"build", "PCSH10109"})));
+	play_steps.push_back(run);
 	if (g_hub_win) SDL_MinimizeWindow(g_hub_win);   /* the game's window gets the foreground (and the keyboard): a launcher left up front kept the keys (reported 2026-11-07) */
 	/* the internal render scale follows the chosen resolution (original 960x544 = 1, 720p = 1, 1080p = 2, 2K = 3, 4K = 4):
 	 * handed to the runtime as RECOMP_RENDER_SCALE (its FIRST source, before the settings files) so the choice always
@@ -1852,6 +2594,15 @@ static void p5d_start_play(int res) {
 	 * shared one and a stale value there kept the old scale (a 4K choice that still rendered at 3x looked upscaled) */
 	static const char *const scale[5] = {"1", "1", "2", "3", "4"};
 	run.env.push_back(std::string("RECOMP_RENDER_SCALE=") + scale[res]);
+	run.env.push_back(std::string("RECOMP_VIBRANCE=") + std::to_string(p5d_vibrance()));   /* M1663: the dynamic vibrance strength */
+
+	/* M1646: the panel's AI-interpolation mode: present only fresh game frames (30 fps setting -> 30 presents/s, 60 -> 60) so
+	 * the driver's interpolator can insert frames between them; without it the present loop repeats each picture at 60/s and
+	 * there is nothing to interpolate (a 30 fps setting looked unchanged with Smooth Motion on). */
+	if (p5d_fg_present()) run.env.push_back("RECOMP_FG_PRESENT=1");
+	/* M1651: NVIDIA App's AI 插帧 profile has a broken application entry for this game (its "add application" step failed),
+	 * so the driver profile never matches the process and the interpolation never engages; repair it before every launch. */
+	{ std::string d; if (p5d_repair_fgx_profile(&d)) g_fgx_note = d; }
 	{ std::string gp = game_settings_path("PCSH10109");
 	  if (exists(gp)) { Ini g = ini_load(gp); bool had = false;
 		for (auto &e : g.kv) if (e.first == "render_scale") had = true;
@@ -1885,9 +2636,32 @@ static void p5d_start_play(int res) {
 		/* the top-left real-time frame-rate overlay (metrics.c: `osd` = 0 off / 1 fps+frame time / 2 full);
 		 * the launcher's option writes 1 or 0, the game's own F1 still cycles it at run time */
 		ini_set(cur, "osd", p5d_show_fps() ? "1" : "0");
+		/* M1663h: the dynamic vibrance: the env passed to the play step was not reaching the child, so it goes through
+		 * the shared settings the game does read (the same channel as render_scale/frame_rate/osd) */
+		ini_set(cur, "vibrance", std::to_string(p5d_vibrance()));
+		ini_set(cur, "vib_strong", "0");   /* M1663j: 強烈模式 removed */
 		ini_save(cur, sp, SHARED_HEADER);
 	  } }
-	task_start("啟動 女神異聞錄5：星夜熱舞", "play", "PCSH10109", {chk, run});
+	/* M1664: before the game starts, apply the enabled MODs to the library's CPK archives (the script restores the
+	 * previous patch first, then patches the currently enabled set; a MOD toggle therefore just needs a restart). */
+	{
+		/* the packaged release ships the pipeline folder, not dev/: look there first (the script was missing from
+		 * release builds, which made the MOD enable switch do nothing) */
+		std::string script = g_root + "/pipeline/p5d_mods_apply.py";
+		if (!exists(script)) script = g_root + "/dev/p5d_mods_apply.py";
+		if (exists(script)) {
+			Proc p;
+			/* the script works on the decrypted title folder (<library>/decrypted/<id>/), not on the library root: passing the root
+			 * made it look for <library>/app0/data/data.cpk, find nothing and quietly do nothing -- the real reason a MOD enable
+			 * had no effect even after the script shipped. */
+			std::string title = g_dump + "/decrypted/PCSH10109";
+			if (proc_start(p, {python_exe(), script, "apply"}, {std::string("P5D_LIB=") + title})) {
+				int rc = proc_wait(p); proc_done(p);
+				fprintf(stderr, "mods: apply exit %d\n", rc);
+			}
+		}
+	}
+	task_start("啟動 女神異聞錄5：星夜熱舞", "play", "PCSH10109", play_steps);
 }
 /* the build's version stamp vs this launcher's: only a hint (no rebuild, no waiting) */
 static int p5d_build_stale(void) {
@@ -1896,6 +2670,11 @@ static int p5d_build_stale(void) {
 	if (FILE *f = fopen((g_dump + "/decrypted/PCSH10109/recomp/.built_version_min").c_str(), "rb")) { char b[256]; size_t n = fread(b, 1, sizeof b - 1, f); fclose(f); built.assign(b, n); }
 	while (!mine.empty() && (mine.back() == '\n' || mine.back() == '\r' || mine.back() == ' ')) mine.pop_back();
 	while (!built.empty() && (built.back() == '\n' || built.back() == '\r' || built.back() == ' ')) built.pop_back();
+	/* M1645: only the content hash after '+' decides staleness. A launcher-only release bumps the commit prefix in
+	 * version.txt ("v0.1.5-p5d-<commit>+<content>") but not the game's runtime/packs content, so a player who just updated
+	 * the launcher must not be told to rebuild the game. Older files without '+' fall back to the whole string. */
+	size_t mp = mine.rfind('+'), bp = built.rfind('+');
+	if (mp != std::string::npos && bp != std::string::npos) { mine = mine.substr(mp); built = built.substr(bp); }
 	return !mine.empty() && !built.empty() && mine != built;
 }
 static void p5d_install_firmware(void) {
@@ -1922,7 +2701,97 @@ static void p5d_import_firmware_dir(void) {   /* copy an already-decrypted firmw
 		"print('firmware', ver, '->', dst)\n";
 	task_start("導入系統固件", "firmware", "", {step("複製已解壓的固件", {python_exe(), "-c", script, g_p5d_fw_dir, g_dump})});
 }
+
+/* ---- M1657: DLC (add-on content) ---------------------------------------------------------------------------------
+ * P5D's add-ons live on a Vita in ux0:addcont/<title>/<ADDCONT...>/ (the decrypted NoNpDrm folder tree players keep):
+ * one folder per add-on with its own DLCDxxxxx.cpk. The game mounts addcont0: (libapputil's sceAppUtilDrmOpen) and opens
+ * "addcont0:/ADDCONT<id>/<id>.cpk" (the string is in eboot.bin), so the port only has to put those folders under
+ * <RECOMP_FS>/addcont0/ -- its fs root is <library>/decrypted/PCSH10109/recomp/fs. apputil.c then reports the add-ons as
+ * licensed (it already did that whenever addcont0 exists) and the game finds its DLC. Optional: the base game works
+ * without it. */
+static std::string g_p5d_dlc_dir;
+static std::string g_p5d_mod_src, g_p5d_mod_src_seen;
+static std::vector<P5dMod> g_mods; static bool g_mods_loaded;        /* the folder the player picked (pick_folder fills it asynchronously) */
+static std::string g_p5d_dlc_dir_seen;   /* the one already imported */
+static std::string p5d_dlc_target(void) { return g_dump + "/decrypted/PCSH10109/recomp/fs/addcont0"; }
+static bool p5d_is_dir(const std::string &p) { struct stat st; return stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode); }
+static unsigned long long p5d_tree_size(const std::string &p) {
+	unsigned long long n = 0; DIR *d = opendir(p.c_str()); if (!d) return 0;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		if (e->d_name[0] == '.' && (!e->d_name[1] || (e->d_name[1] == '.' && !e->d_name[2]))) continue;
+		std::string c = p + "/" + e->d_name; struct stat st; if (stat(c.c_str(), &st) != 0) continue;
+		n += S_ISDIR(st.st_mode) ? p5d_tree_size(c) : (unsigned long long)st.st_size;
+	}
+	closedir(d);
+	return n;
+}
+/* the add-ons already imported: their count and size (0 when none) */
+static int p5d_dlc_imported(unsigned long long *bytes) {
+	*bytes = 0;
+	std::string dst = p5d_dlc_target();
+	DIR *d = opendir(dst.c_str()); if (!d) return 0;
+	int n = 0; struct dirent *e;
+	while ((e = readdir(d))) {
+		if (strncasecmp(e->d_name, "ADDCONT", 7) != 0) continue;
+		std::string c = dst + "/" + e->d_name;
+		if (!p5d_is_dir(c)) continue;
+		n++; *bytes += p5d_tree_size(c);
+	}
+	closedir(d);
+	return n;
+}
+static void p5d_dlc_remove_tree(const std::string &p) {
+	DIR *d = opendir(p.c_str()); if (!d) { remove(p.c_str()); return; }
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		if (e->d_name[0] == '.' && (!e->d_name[1] || (e->d_name[1] == '.' && !e->d_name[2]))) continue;
+		std::string c = p + "/" + e->d_name;
+		if (p5d_is_dir(c)) p5d_dlc_remove_tree(c); else remove(c.c_str());
+	}
+	closedir(d);
+	rmdir(p.c_str());
+}
+/* the copy itself: Python (shutil), so a 2 GB tree moves with a real progress bar; it accepts the reAddcont folder (with
+ * its PCSH10109), the PCSH10109 folder, or a folder that already holds ADDCONT* add-ons, and skips a non-DLC pick */
+static std::string p5d_dlc_script(void) {
+	return
+		"import os, sys, shutil\n"
+		"src, lib = sys.argv[1], sys.argv[2]\n"
+		"cands = [src]\n"
+		"p = os.path.join(src, 'PCSH10109')\n"
+		"if os.path.isdir(p): cands.insert(0, p)\n"
+		"base = adds = None\n"
+		"for cand in cands:\n"
+		"    if not os.path.isdir(cand): continue\n"
+		"    a = [d for d in sorted(os.listdir(cand)) if d.upper().startswith('ADDCONT') and os.path.isdir(os.path.join(cand, d))]\n"
+		"    if a: base, adds = cand, a; break\n"
+		"if not base:\n"
+		"    print('DLC: no ADDCONT* add-ons in that folder: pick the reAddcont folder (it holds PCSH10109) or the PCSH10109 folder itself')\n"
+		"    sys.exit(2)\n"
+		"dst = os.path.join(lib, 'decrypted', 'PCSH10109', 'recomp', 'fs', 'addcont0')\n"
+		"os.makedirs(dst, exist_ok=True)\n"
+		"files = []\n"
+		"for a in adds:\n"
+		"    for root, _, fs in os.walk(os.path.join(base, a)):\n"
+		"        for f in fs: files.append(os.path.join(root, f))\n"
+		"total = len(files) or 1\n"
+		"copied = written = 0\n"
+		"for i, f in enumerate(files, 1):\n"
+		"    out = os.path.join(dst, os.path.relpath(f, base))\n"
+		"    os.makedirs(os.path.dirname(out), exist_ok=True)\n"
+		"    try:\n"
+		"        shutil.copy2(f, out); copied += 1; written += os.path.getsize(f)\n"
+		"    except OSError as e:\n"
+		"        print('DLC: copy failed %s: %s' % (f, e))\n"
+		"    if i % 8 == 0 or i == total: print('PROGRESS %d/%d' % (i, total), flush=True)\n"
+		"print('DLC: %d add-ons (%.1f MB) imported' % (len(adds), written / 1048576.0))\n";
+}
+static void p5d_import_dlc(void) {
+	task_start("導入 DLC", "dlc", "", {step("複製追加內容", {python_exe(), "-c", p5d_dlc_script(), g_p5d_dlc_dir, g_dump})});
+}
 static void p5d_ui(SDL_Window *win) {
+	game_folder_move_poll();
 	const ImGuiViewport *vp = ImGui::GetMainViewport();
 	const float em = ImGui::GetFontSize();
 	const bool busy = g_task.running;
@@ -1949,6 +2818,32 @@ static void p5d_ui(SDL_Window *win) {
 		}
 	}
 
+	/* M1784/M1785: picking a ROM folder starts its import at once (decrypt + import in the background) -- the owner asked
+	 * for "select the folder -> 已導入" while the old flow only imported as the first build step. Two rules learned from
+	 * the first test build: a REMEMBERED path from launcher.ini is NOT a pick (no auto import nor 已導入 at start-up), and
+	 * only a real pick (the path changing this session) triggers the import. Selection never starts a build. */
+	static bool rom_loaded;
+	static std::string rom_seen;
+	static bool rom_pending;
+	if (!rom_loaded) {
+		rom_loaded = true;
+		if (g_p5d_rom_path.empty() && g_prefs.count("p5d_rom_path")) g_p5d_rom_path = g_prefs["p5d_rom_path"];
+		rom_seen = g_p5d_rom_path;
+		rom_pending = false;
+	}
+	if (g_p5d_rom_path != rom_seen) {
+		rom_seen = g_p5d_rom_path;
+		g_p5d_rom_tried.clear();
+		rom_pending = !rom_seen.empty();
+		if (!rom_seen.empty()) prefs_set("p5d_rom_path", rom_seen);
+	}
+	if (rom_pending && (imported || busy)) rom_pending = false;
+	if (rom_pending) {
+		rom_pending = false;
+		g_p5d_rom_tried = g_p5d_rom_path;
+		p5d_start_import();
+	}
+
 	ui::heading(P5D_TITLE, em * 2.0f);
 	ImGui::SameLine(); ImGui::AlignTextToFramePadding();
 	ImGui::TextDisabled("Persona 5 Dancing in Starlight · PC 移植版 · 鍵盤鼠標 / 手柄 · %s", p5d_version().c_str());
@@ -1960,16 +2855,58 @@ static void p5d_ui(SDL_Window *win) {
 	ImGui::Dummy(ImVec2(0, em * 0.5f));
 	ImGui::Separator();
 	ImGui::Dummy(ImVec2(0, em * 0.5f));
-
+	/* M1648: a menu bar with pages instead of one long page. The main tab keeps the game copy, firmware, build, the
+	 * on-screen frame rate display and the launch block; the "畫質選項" tab holds resolution, frame rate and the AI frame
+	 * interpolation. */
+	ImGui::Dummy(ImVec2(0, em * 0.3f));
+	if (ImGui::BeginTabBar("##p5d_pages")) {
+		if (ImGui::BeginTabItem("主頁")) {
+			ImGui::Dummy(ImVec2(0, em * 0.5f));
 	/* ① the game copy */
 	ui::heading("① 遊戲 ROM", em * 1.25f);
 	if (imported) { ui::dot(ui::ready); ImGui::Text("已導入：Persona 5 Dancing in Starlight（%s）", g->version.empty() ? "1.00" : g->version.c_str()); }
-	else { ui::dot(ui::warn); ImGui::TextUnformatted("尚未導入遊戲：選擇你的遊戲文件夾（ux0:app/…，含 licence 的拷貝）"); }
+	else if (!g_p5d_rom_path.empty() && !busy && g_failed.rfind("僅導入", 0) == 0) {
+		/* the auto import of the picked folder failed (a licence, a version the pack does not play, a folder that is not
+		 * a game...): say so here instead of leaving an orange "will import" line forever. The log says why. */
+		ui::dot(ui::warn); ImGui::TextUnformatted("導入失敗：請看下方日誌（重新選擇遊戲文件夾可重試；「開始構建」也會先導入）");
+		ImGui::TextDisabled("已選：%s", g_p5d_rom_path.c_str());
+	}
+	else if (!g_p5d_rom_path.empty() && g_p5d_rom_tried == g_p5d_rom_path) {
+		/* this path was PICKED in this session and the auto import was started for it (the owner asked for
+		 * "select the folder -> 已導入"; the real state follows when the import ends). */
+		ui::dot(ui::ready);
+		if (busy && g_task.kind == "import") ImGui::TextUnformatted("已導入（正在校驗版本…）");
+		else ImGui::TextUnformatted("已導入（選擇的遊戲文件夾）");
+		ImGui::TextDisabled("已選：%s", g_p5d_rom_path.c_str());
+	}
+	else if (!g_p5d_rom_path.empty()) {
+		/* a REMEMBERED path (launcher.ini) with nothing imported here is still "not imported": at start-up this used to
+		 * read 已導入 and even started a version check on a library that had no game (the fresh/test-library report). */
+		ui::dot(ui::warn); ImGui::TextUnformatted("尚未導入：已記住上次的遊戲文件夾，重新選擇它即可導入（或點「開始構建」）");
+		ImGui::TextDisabled("已選：%s", g_p5d_rom_path.c_str());
+	} else { ui::dot(ui::warn); ImGui::TextUnformatted("尚未導入遊戲：選擇你的遊戲文件夾（ux0:app/…，含 licence 的拷貝）"); }
 	ImGui::BeginDisabled(busy);
 	if (ImGui::Button("選擇遊戲文件夾…")) pick_folder(win, &g_p5d_rom_path);
 	ImGui::SameLine(); ImGui::TextDisabled("%s", g_p5d_rom_path.empty() ? "（或直接點「開始構建」使用已導入的拷貝）" : g_p5d_rom_path.c_str());
 	ImGui::EndDisabled();
+	ImGui::SameLine();
+	ImGui::BeginDisabled(busy || !imported);
+	if (ImGui::Button("撤銷導入")) g_p5d_undo_ask = true;
+	ImGui::EndDisabled();
 	ImGui::Dummy(ImVec2(0, em * 0.9f));
+	/* M1786: 撤銷導入 -- undo the imported game folder: only the import records (elf/ and version) go away, so the built
+	 * game, its saves and the MODs stay and the folder picker can import again. */
+	if (g_p5d_undo_ask) { ImGui::OpenPopup("撤銷導入遊戲文件夾？"); g_p5d_undo_ask = false; }
+	if (ImGui::BeginPopupModal("撤銷導入遊戲文件夾？", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+		ImGui::TextUnformatted("只刪除這個遊戲文件夾的「導入」記錄（elf/ 與 version），");
+		ImGui::TextUnformatted("不會刪除已構建的遊戲（recomp）、存檔與 MOD。");
+		ImGui::TextUnformatted("撤銷後遊戲仍可啟動；重新選擇遊戲文件夾即可再次導入（用於重新驗證導入流程）。");
+		ImGui::Dummy(ImVec2(0, em * 0.4f));
+		if (ui::primary_button("確定撤銷")) { p5d_undo_import(); ImGui::CloseCurrentPopup(); }
+		ImGui::SameLine();
+		if (ImGui::Button("取消")) ImGui::CloseCurrentPopup();
+		ImGui::EndPopup();
+	}
 
 	/* ② the firmware */
 	ui::heading("② 系統固件", em * 1.25f);
@@ -1987,8 +2924,32 @@ static void p5d_ui(SDL_Window *win) {
 	ImGui::EndDisabled();
 	ImGui::Dummy(ImVec2(0, em * 0.9f));
 
-	/* ③ build */
-	ui::heading("③ 開始構建", em * 1.25f);
+	ImGui::Dummy(ImVec2(0, em * 0.9f));
+
+	/* ③ DLC (optional) */
+	ui::heading("③ 追加內容（DLC，可選）", em * 1.25f);
+	{
+		static int dlc_n = -1; static unsigned long long dlc_b = 0; static double dlc_at = -1e9;
+		if (!busy && ImGui::GetTime() - dlc_at > 2.0) { dlc_n = p5d_dlc_imported(&dlc_b); dlc_at = ImGui::GetTime(); }
+		if (dlc_n > 0) { ui::dot(ui::ready); ImGui::Text("已導入：%d 個追加內容（%.2f GB）", dlc_n, (double)dlc_b / 1073741824.0); }
+		else { ui::dot(ui::muted); ImGui::TextUnformatted("未導入追加內容（可選，不影響遊戲本體）"); }
+		ImGui::BeginDisabled(busy);
+		if (ImGui::Button("選擇 DLC 文件夾…")) pick_folder(win, &g_p5d_dlc_dir);
+		ImGui::SameLine(); ImGui::TextDisabled("reAddcont 文件夾（內含 PCSH10109）或其中的 PCSH10109 文件夾");
+		ImGui::EndDisabled();
+		if (!g_p5d_dlc_dir.empty() && g_p5d_dlc_dir != g_p5d_dlc_dir_seen) { g_p5d_dlc_dir_seen = g_p5d_dlc_dir; p5d_import_dlc(); }
+		if (dlc_n > 0) {
+			ImGui::BeginDisabled(busy);
+			if (ImGui::SmallButton("移除全部 DLC")) {
+				p5d_dlc_remove_tree(p5d_dlc_target()); dlc_n = -1; dlc_at = -1e9;
+			}
+			ImGui::EndDisabled();
+		}
+	}
+	ImGui::Dummy(ImVec2(0, em * 0.9f));
+
+	/* ④ build */
+	ui::heading("④ 開始構建", em * 1.25f);
 	if (built) { ui::dot(ui::ready); ImGui::TextUnformatted("已構建：可隨時啟動遊戲"); }
 	else if (imported) { ui::dot(ui::accent); ImGui::TextUnformatted("已導入，等待構建（AOT 重編譯 + 鏈接，約 2–6 分鐘）"); }
 	else { ui::dot(ui::muted); ImGui::TextUnformatted("導入遊戲後點擊右側按鈕"); }
@@ -1998,40 +2959,18 @@ static void p5d_ui(SDL_Window *win) {
 	ImGui::SameLine(); ImGui::TextDisabled("（會自動解密、識別版本並編譯成全原生程序）");
 	ImGui::Dummy(ImVec2(0, em * 0.9f));
 
-	/* ④ resolution */
-	ui::heading("④ 遊戲分辨率", em * 1.25f);
-	{
-		int ri = p5d_res_index();
-		for (int i = 0; i < 5; i++) {
-			if (i % 2) ImGui::SameLine(ImGui::GetFontSize() * 15.0f);
-			if (ImGui::RadioButton(P5D_RES_LABEL[i], ri == i)) { ri = i; prefs_set("p5d_res", P5D_RES[i]); }
-		}
-		ImGui::TextDisabled("內部渲染倍率隨所選尺寸提升（4K=4x、2K=3x、1080p=2x），原版 960×544 佈局不變；全屏可在遊戲內設定；4K 需要 4K 顯示器（在 2K 螢幕上會以 4x 超採樣呈現，畫面不會超出螢幕）");
-	}
-	ImGui::Dummy(ImVec2(0, em * 0.9f));
-
-	/* ⑤ frame rate */
-	ui::heading("⑤ 遊戲幀率", em * 1.25f);
-	{
-		int fi = p5d_fps_index();
-		for (int i = 0; i < 2; i++) {
-			if (i) ImGui::SameLine(ImGui::GetFontSize() * 15.0f);
-			if (ImGui::RadioButton(P5D_FPS_LABEL[i], fi == i)) { fi = i; prefs_set("p5d_fps", P5D_FPS[i]); }
-		}
-		if (fi == 0) ImGui::TextDisabled("30 幀：與 PS Vita 原版一致，節奏/動畫最穩定");   /* (M1640: the 60 fps line was removed at the user's request) */
-	}
-	ImGui::Dummy(ImVec2(0, em * 0.9f));
-
-	/* ⑥ on-screen frame rate */
-	ui::heading("⑥ 畫面幀率顯示", em * 1.25f);
+	/* ⑤ on-screen frame rate */
+	ui::heading("⑤ 畫面幀率顯示", em * 1.25f);
 	{
 		bool show = p5d_show_fps();
 		if (ImGui::Checkbox("在畫面左上角顯示實時幀率（FPS / 幀時間）", &show)) prefs_set("p5d_show_fps", show ? "1" : "0");
 		ImGui::TextDisabled("僅影響顯示，不影響效能；遊戲內按 F1 可切換 關 / 幀率 / 完整統計");
+		ImGui::TextDisabled("幀率行：FPS = 遊戲真實渲染幀數；DISP = 實測這個遊戲視窗每秒顯示的不同畫面張數（由螢幕擷取量測，");
+		ImGui::TextDisabled("包含驅動 AI 插帧生成的幀；30 幀設定約 48–56、60 幀設定約 107，受面板刷新率上限）。");
 	}
 	ImGui::Dummy(ImVec2(0, em * 0.9f));
 
-	/* ⑦ launch */
+	/* ⑥ launch */
 	ImGui::BeginDisabled(busy || !built || !g_firmware);
 	const float bw = ImGui::CalcTextSize("啟 動 遊 戲").x + em * 3.0f;
 	if (ui::primary_button("啟 動 遊 戲", ImVec2(bw, em * 2.0f))) p5d_start_play(p5d_res_index());
@@ -2039,7 +2978,7 @@ static void p5d_ui(SDL_Window *win) {
 	if (!built) { ImGui::SameLine(); ImGui::TextDisabled("構建完成後可啟動"); }
 	else if (p5d_build_stale()) {
 		ImGui::Dummy(ImVec2(0, em * 0.3f));
-		ui::dot(ui::warn); ImGui::TextUnformatted("這個構建由舊版本的啟動器創建：如果剛剛更新過啟動器，請先點「重新構建」一次（之後啟動都不會再檢查）");
+		ui::dot(ui::warn); ImGui::TextUnformatted("偵測到啟動器已更新：啟動遊戲時會自動重新構建一次（之後不會再檢查）");
 	}
 
 	/* the run */
@@ -2065,6 +3004,251 @@ static void p5d_ui(SDL_Window *win) {
 	}
 	if (ImGui::Button(g_drawer ? "隱藏日誌" : "顯示日誌")) g_drawer = !g_drawer;
 	if (g_drawer) p5d_log_drawer();
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("畫質選項")) {
+			ImGui::Dummy(ImVec2(0, em * 0.5f));
+	/* the quality page (M1648): resolution, frame rate and the AI frame interpolation together */
+	{
+		ImGui::SeparatorText("解析度");
+		int ri = p5d_res_index();
+		for (int i = 0; i < 5; i++) {
+			if (i % 2) ImGui::SameLine(ImGui::GetFontSize() * 15.0f);
+			if (ImGui::RadioButton(P5D_RES_LABEL[i], ri == i)) { ri = i; prefs_set("p5d_res", P5D_RES[i]); }
+		}
+		ImGui::TextDisabled("內部渲染倍率隨所選尺寸提升（4K=4x、2K=3x、1080p=2x），原版 960×544 佈局不變；全屏可在遊戲內設定；4K 需要 4K 顯示器（在 2K 螢幕上會以 4x 超採樣呈現，畫面不會超出螢幕）");
+		ImGui::Dummy(ImVec2(0, em * 0.6f));
+
+		ImGui::SeparatorText("幀率");
+		int fi = p5d_fps_index();
+		for (int i = 0; i < 2; i++) {
+			if (i) ImGui::SameLine(ImGui::GetFontSize() * 15.0f);
+			if (ImGui::RadioButton(P5D_FPS_LABEL[i], fi == i)) { fi = i; prefs_set("p5d_fps", P5D_FPS[i]); }
+		}
+		if (fi == 0) ImGui::TextDisabled("30 幀：與 PS Vita 原版一致，節奏/動畫最穩定");
+		ImGui::Dummy(ImVec2(0, em * 0.6f));
+
+		ImGui::SeparatorText("動態亮麗（內置色彩增強）");
+		{
+			int vib = p5d_vibrance();
+			ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16.0f);
+			if (ImGui::SliderInt("##vibrance", &vib, 0, 100, "%d%%")) prefs_set("p5d_vibrance", std::to_string(vib));
+			ImGui::SameLine();
+			if (vib <= 0) ImGui::TextDisabled("關閉（0%% = 預設）");
+			else if (vib < 35) ImGui::TextDisabled("輕微");
+			else if (vib < 70) ImGui::TextDisabled("標準（推薦）");
+			else ImGui::TextDisabled("強烈");
+		}
+		ImGui::TextDisabled("類比 NVIDIA「動態亮麗」的自適應飽和度：低飽和的顏色提升多、已飽和的幾乎不動，膚色與白色不會溢色；");
+		ImGui::TextDisabled("0 = 關閉（預設）；100% = 標準強度上限；改完需重新啟動遊戲生效；不影響幀率");
+		ImGui::Dummy(ImVec2(0, em * 0.6f));
+
+		ImGui::SeparatorText("AI 插帧（NVIDIA Smooth Motion）");
+		const P5dFgProbe &fg = p5d_fg();
+		if (!fg.nv) { ui::dot(ui::muted); ImGui::TextUnformatted("未檢測到 NVIDIA 顯示卡 / 驅動（需要 GeForce RTX 40/50 並安裝 NVIDIA App）"); }
+		else {
+			bool rtx = fg.gpu.find("RTX 40") != std::string::npos || fg.gpu.find("RTX 50") != std::string::npos;
+			ui::dot(rtx ? ui::ready : ui::warn);
+			if (rtx) ImGui::Text("檢測到 %s（驅動 %s）：可在 NVIDIA App 為這個遊戲開啟「AI 插帧」", fg.gpu.c_str(), fg.driver.c_str());
+			else ImGui::Text("%s（驅動 %s）：AI 插帧需要 RTX 40/50 系", fg.gpu.c_str(), fg.driver.c_str());
+		}
+		std::string exe = g_dump + "/decrypted/PCSH10109/recomp/game_host_min.exe";
+		struct stat st; bool have_exe = stat(exe.c_str(), &st) == 0;
+		ImGui::TextDisabled("遊戲程式：%s%s", exe.c_str(), have_exe ? "" : "（尚未構建）");
+		static double copied_until;
+		if (ImGui::Button("複製遊戲程式路徑")) { if (!SDL_SetClipboardText(exe.c_str())) {} copied_until = ImGui::GetTime() + 2.0; }
+		if (copied_until > ImGui::GetTime()) { ImGui::SameLine(); ImGui::TextDisabled("已複製"); }
+		ImGui::SameLine();
+		if (fg.app) { if (ImGui::Button("打開 NVIDIA App")) p5d_open_path(fg.app_path); }
+		else { if (ImGui::Button("NVIDIA App 下載頁")) SDL_OpenURL("https://www.nvidia.com/en-us/software/nvidia-app/"); }
+		ImGui::SameLine();
+		if (ImGui::Button("重新檢測")) { g_fg = P5dFgProbe(); }
+		/* the panel's own switch: the presentation side of the feature, which the launcher can control (the Smooth Motion
+		 * toggle itself lives in NVIDIA App's private driver channel and cannot be flipped from here) */
+		bool fgp = p5d_fg_present();
+		if (ImGui::Checkbox("啟用 AI 插帧支援（30 幀設定也有效）", &fgp)) prefs_set("p5d_fg_present", fgp ? "1" : "0");
+		ImGui::TextDisabled("這個選項只改「畫面怎麼送給顯卡驅動」，不改遊戲本身：遊戲每秒只送出真實的新畫面（30 幀設定 → 30 張，");
+		ImGui::TextDisabled("60 幀 → 60 張），不重複送同一張；這樣驅動才有兩張不同的畫面可以插幀。不影響節奏、音樂或判定。");
+		ImGui::TextDisabled("30 幀設定時螢幕上約看到 2× 的幀數（驅動在 30 張真實幀之間補幀）。");
+		ImGui::TextDisabled("開啟：NVIDIA App → 圖形 → 程式設定 → 加入上面的遊戲程式 → 驅動程式設定 → AI 插帧（英文 Smooth Motion）= 開；");
+		ImGui::TextDisabled("NVIDIA 覆蓋層的 FPS 顯示插幀後的值，遊戲內 F1 顯示的仍是真實渲染的 30 / 60。");
+		ImGui::TextDisabled("驅動檔案：%s", g_fgx_note.empty() ? "（點「啟動遊戲」時自動檢查；NVIDIA App 加入程式時可能把路徑寫壞，"
+			"導致插帧不生效，啟動器會自動修好）" : g_fgx_note.c_str());
+		ImGui::TextDisabled("修好驅動條目後 AI 插帧才會真正生效（啟動器每次啟動遊戲前會自動檢查並修復；OSD 的 DISP 會顯示插帧後幀數）；");
+		ImGui::TextDisabled("說明：這是 NVIDIA 驅動級的 AI 插帧（AI frame interpolation / Smooth Motion），不是 DLSS 優設或 DLSS 幀生成；");
+		ImGui::TextDisabled("本移植是 Vulkan 程式（沒有 D3D12 與運動向量），僅 RTX 40/50 有效，可能有輕微延遲或畫面偽影。");
+	}
+	ImGui::Dummy(ImVec2(0, em * 0.9f));
+
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("其他設置")) {
+			ImGui::Dummy(ImVec2(0, em * 0.5f));
+			ui::heading("其他設置", em * 1.25f);
+			ui::muted_wrapped("與遊戲檔案相關的其他功能：遊戲存放位置、存檔位置，以及添加到 Steam 庫。");
+			ImGui::Dummy(ImVec2(0, em * 0.6f));
+
+			/* M1794: the game-library location moved here from 主頁 ③ (the owner asked for it): the whole library -- game,
+			 * saves, firmware, MODs -- moves with the switch, so it is only offered once the game is built. */
+			ImGui::SeparatorText("遊戲存放位置");
+			if (built) { ui::dot(ui::ready); ImGui::TextUnformatted("遊戲已構建：可以更改遊戲存放位置"); }
+			else { ui::dot(ui::muted); ImGui::TextUnformatted("遊戲尚未構建：構建完成後才能更改存放位置"); }
+			ImGui::TextDisabled("當前：%s", g_dump.c_str());
+			{ const std::string built_dir = g_dump + "/decrypted/PCSH10109/recomp";   /* M1734: where the built game itself is */
+			  ImGui::TextDisabled("構建後的遊戲：%s", built_dir.c_str());
+			  if (built) { ImGui::SameLine(); if (ImGui::SmallButton("打開遊戲文件夾")) open_folder(built_dir); } }
+			if (g_move_running) { ui::spinner(ui::accent); ImGui::SameLine(); ImGui::TextWrapped("正在把現有遊戲庫（含存檔）移動到新位置…（同盤瞬間完成；跨盤逐檔移動，邊複製邊刪除，不會佔用雙份空間）"); }
+			if (!g_move_error.empty()) ui::muted_wrapped(g_move_error.c_str());
+			if (g_move_running) ui::muted_wrapped("移動可能需要一點時間，期間請不要關閉啟動器。");
+			ImGui::BeginDisabled(busy || g_move_running || !built);
+			if (ImGui::Button("更改文件夾…")) change_game_folder();
+			ImGui::SameLine();
+			if (ImGui::Button("使用默認位置")) change_to_default_folder();
+			ImGui::SameLine();
+			if (ImGui::Button("打開文件夾")) open_folder(g_dump);
+			ImGui::EndDisabled();
+			if (!built) { ImGui::SameLine(); ImGui::TextDisabled("構建完成後可用"); }
+			ImGui::TextDisabled("默認：%s", library_default_dir().c_str());
+			ui::muted_wrapped("提示：這個位置是「整個遊戲庫」的位置。改到空文件夾時現有庫會移動過去；「使用默認位置」在默認位置為空時也會把整個庫移動回去；若新位置已有內容則直接使用它。移動後原位置不再保留（需要備份請先自行複製一份）。");
+			ImGui::Dummy(ImVec2(0, em * 0.9f));
+
+			ImGui::SeparatorText("存檔位置");
+			/* the saves live in the built game's fs tree (runtime/core/apputil.c: savedata0: is <RECOMP_FS>/savedata0). The
+			 * path follows g_dump, so a moved library moves the saves with it. */
+			const std::string save_dir = g_dump + "/decrypted/PCSH10109/recomp/fs/savedata0";
+			if (built) { ui::dot(ui::ready); ImGui::TextUnformatted("遊戲已構建：存檔文件夾可用"); }
+			else { ui::dot(ui::muted); ImGui::TextUnformatted("遊戲尚未構建：構建完成後存檔文件夾才可用"); }
+			ImGui::TextDisabled("存檔文件夾：%s", save_dir.c_str());
+			ImGui::Dummy(ImVec2(0, em * 0.3f));
+			ImGui::BeginDisabled(!built);
+			if (ImGui::Button("打開存檔文件夾")) open_folder(save_dir);
+			ImGui::SameLine();
+			if (ImGui::Button("複製存檔路徑")) { if (!SDL_SetClipboardText(save_dir.c_str())) {} }
+			ImGui::EndDisabled();
+			if (!built) { ImGui::SameLine(); ImGui::TextDisabled("構建完成後可用"); }
+			ImGui::Dummy(ImVec2(0, em * 0.4f));
+			ui::muted_wrapped("提示：存檔會隨「遊戲存放位置」一起移動；備份存檔時直接複製這個文件夾即可。");
+			ImGui::Dummy(ImVec2(0, em * 0.9f));
+
+			/* M1788: add the port to the Steam library -- from then on it starts through Steam (overlay, play time), while
+			 * the desktop launcher keeps working exactly as before. Needs the game built (gated) and Steam closed. */
+			ImGui::SeparatorText("Steam");
+#ifdef _WIN32
+			ui::muted_wrapped("把本移植版加入 Steam 庫：之後可以在 Steam 裡啟動（Steam 覆蓋層、遊戲時長統計）；桌面啟動器仍然可以照常使用。");
+			ui::muted_wrapped("注意：手柄使用遊戲內建的支援，本移植版不支援 Steam 的手柄配置（Steam Input）映射——在 Steam 裡改手把配置不會影響本作。");
+			if (built) { ui::dot(ui::ready); ImGui::TextUnformatted("遊戲已構建：可以添加到 Steam 庫（封面/背景由遊戲檔案即時生成）"); }
+			else { ui::dot(ui::muted); ImGui::TextUnformatted("遊戲尚未構建：構建完成後才能添加到 Steam 庫"); }
+			ImGui::BeginDisabled(busy || !built);
+			if (ImGui::Button("添加到 Steam 庫")) { std::string m; g_p5d_steam_ok = p5d_steam_add(m); g_p5d_steam_msg = m; }
+			ImGui::EndDisabled();
+			if (!built) { ImGui::SameLine(); ImGui::TextDisabled("構建完成後可用"); }
+			if (!g_p5d_steam_msg.empty()) {
+				ui::dot(g_p5d_steam_ok ? ui::ready : ui::warn);
+				ImGui::TextWrapped("%s", g_p5d_steam_msg.c_str());
+			}
+			ImGui::TextDisabled("加入後如果 Steam 裡沒有出現：重新啟動 Steam；Steam 執行時請勿再次添加。");
+#else
+			ui::muted_wrapped("Steam 快捷方式目前只在 Windows 版啟動器裡提供。");
+#endif
+
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("金手指")) {
+			ImGui::Dummy(ImVec2(0, em * 0.5f));
+			ui::heading("金手指", em * 1.25f);
+			ui::muted_wrapped("遊戲內直接按鍵即可使用的內置金手指（不需要安裝任何東西，也不會修改遊戲檔案或存檔）。");
+			ImGui::Dummy(ImVec2(0, em * 0.5f));
+
+			ImGui::SeparatorText("F5：自動演奏");
+			ImGui::TextUnformatted("在遊戲中按 F5 開啟 / 關閉自動演奏：演奏時自動命中，適合只想看演出或解鎖歌曲。");
+			ImGui::TextDisabled("可能會偶爾在部分地方觸發閃退。");
+			ImGui::Dummy(ImVec2(0, em * 0.6f));
+
+			ImGui::SeparatorText("F6：一鍵解鎖");
+			ImGui::TextUnformatted("在遊戲主選單按 F6：COMMUNITY 全部解鎖、全支援與挑戰解鎖、歌曲記錄全滿。");
+			ImGui::TextDisabled("按鍵後畫面上方會顯示提示框（約 1 秒）。");
+			ImGui::TextDisabled("F6 會把全部事件 flag 置滿，因此歌曲成績會顯示為滿分 / 全連段；不想影響真實記錄時，請不要在按 F6 後存檔。");
+			ImGui::Dummy(ImVec2(0, em * 0.6f));
+
+			ImGui::SeparatorText("說明");
+			ImGui::TextDisabled("適合測試、看劇情與快速解鎖；正常遊玩時請不要使用，以免破壞成就與記錄體驗。");
+			ImGui::Dummy(ImVec2(0, em * 0.9f));
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("MOD")) {
+			ImGui::Dummy(ImVec2(0, em * 0.5f));
+			ui::heading("MOD", em * 1.25f);
+			ui::muted_wrapped("支援 Reloaded-II 格式的 MOD（Mod.xml + Data/ 文件夾）。導入後可逐個開關；啟用時啟動遊戲會用 MOD 的文件替換遊戲內同名資源。");
+			ImGui::Dummy(ImVec2(0, em * 0.4f));
+			ImGui::BeginDisabled(busy);
+			if (ImGui::Button("添加 MOD 文件夾…")) pick_folder(win, &g_p5d_mod_src);
+			ImGui::SameLine(); ImGui::TextDisabled("選擇包含 Mod.xml 的文件夾（或其上一層）");
+			ImGui::EndDisabled();
+			if (!g_p5d_mod_src.empty() && g_p5d_mod_src != g_p5d_mod_src_seen) {
+				g_p5d_mod_src_seen = g_p5d_mod_src;
+				std::string src = g_p5d_mod_src;
+				if (!exists(src + "/Mod.xml")) {   /* accept the parent folder: take the first child that is a mod */
+					DIR *dd = opendir(src.c_str());
+					if (dd) { while (struct dirent *ce = readdir(dd)) { std::string cn = ce->d_name; if (cn == "." || cn == "..") continue;
+						if (exists(src + "/" + cn + "/Mod.xml")) { src = src + "/" + cn; break; } } closedir(dd); }
+				}
+				mods_import(src); g_mods_loaded = false;
+			}
+			if (ImGui::Button("重新掃描")) g_mods_loaded = false;
+			if (!g_mods_loaded) { mods_scan(g_mods); g_mods_loaded = true; }
+			ImGui::Dummy(ImVec2(0, em * 0.5f));
+			if (g_mods.empty()) { ui::dot(ui::muted); ImGui::TextUnformatted("尚未導入 MOD"); }
+			else {
+				std::string root = mods_root(); (void)root;
+				std::vector<P5dMod> all = g_mods; bool dirty = false;
+				std::string to_remove;
+				const float img_h = em * 5.0f;
+				for (auto &m : all) {
+					const ImVec2 card_start = ImGui::GetCursorScreenPos();
+					const float card_w = ImGui::GetContentRegionAvail().x;
+					ImGui::PushID(m.dir.c_str());
+					ImGui::BeginGroup();
+					if (!m.cover.empty()) { Tex t = texture(m.cover); if (t.t) ImGui::Image(tex_ref(t), ImVec2(em * 5.0f, em * 5.0f)); else ImGui::Dummy(ImVec2(em * 5.0f, em * 5.0f)); }
+					else ImGui::Dummy(ImVec2(em * 5.0f, em * 5.0f));
+					ImGui::EndGroup();
+					ImGui::SameLine();
+					ImGui::BeginGroup();
+					ImGui::TextUnformatted(m.title.c_str());
+					std::string sub = std::string("作者：") + (m.author.empty() ? "未知" : m.author) + "   版本：" + (m.version.empty() ? "-" : m.version);
+					ImGui::TextDisabled("%s", sub.c_str());
+					if (!m.desc.empty()) { ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f); ImGui::TextDisabled("%s", m.desc.c_str()); ImGui::PopTextWrapPos(); }
+					bool en = m.enabled;
+					if (ImGui::Checkbox("啟用", &en)) { m.enabled = en; dirty = true; }
+					ImGui::SameLine(); ImGui::TextDisabled(en ? "啟動遊戲時生效" : "未啟用");
+					ImGui::EndGroup();
+					{   /* M1749: 撤銷導入（右下角） */
+						const char *label = "撤銷導入";
+						const ImVec2 ts = ImGui::CalcTextSize(label);
+						const ImGuiStyle &st = ImGui::GetStyle();
+						const float bw = ts.x + st.FramePadding.x * 2.0f, bh = ts.y + st.FramePadding.y * 2.0f;
+						ImGui::SetCursorScreenPos(ImVec2(card_start.x + card_w - bw, card_start.y + img_h - bh));
+						ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.18f, 0.18f, 1.0f));
+						ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.62f, 0.24f, 0.24f, 1.0f));
+						ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.38f, 0.14f, 0.14f, 1.0f));
+						if (ImGui::Button(label)) to_remove = m.dir;
+						ImGui::PopStyleColor(3);
+					}
+					ImGui::Separator();
+					ImGui::PopID();
+				}
+				if (dirty) { mods_save(all); g_mods = all; }
+				if (!to_remove.empty()) {   /* M1749: 撤销导入：删文件夹、改写启用列表、刷新 */
+					const bool ok = mods_delete_tree(to_remove);
+					if (!ok) fprintf(stderr, "mods: could not remove %s\n", to_remove.c_str());
+					mods_scan(g_mods); g_mods_loaded = true;
+					mods_save(g_mods);
+				}
+			}
+			ImGui::Dummy(ImVec2(0, em * 0.9f));
+			ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
+	}
 
 	ImGui::End();
 }
@@ -2129,10 +3313,10 @@ static std::string find_root(void) {
 }
 
 /* the player's library (pipeline/datadir.py makes the same choice; the stages get this one as ATIV_DUMP): ATIV_DUMP, else
- * <root>/dump when it exists (a checkout, an install from before), else the platform's per-user data folder -- local, not
- * roaming, on Windows: a game is gigabytes -- so an update replaces the install without touching what the player made */
-static std::string library_dir(void) {
-	if (const char *d = getenv("ATIV_DUMP")) if (*d) return d;
+ * the folder chosen in Settings (prefs p5d_libdir), else <root>/dump when it exists (a checkout, an install from before),
+ * else the platform's per-user data folder -- local, not roaming, on Windows: a game is gigabytes -- so an update replaces
+ * the install without touching what the player made */
+static std::string library_default_dir(void) {   /* (what "Use default" goes back to: the rule before M1732) */
 	if (exists(g_root + "/dump")) return g_root + "/dump";
 	const char *home = getenv("HOME"); std::string base;
 #ifdef _WIN32
@@ -2146,6 +3330,203 @@ static std::string library_dir(void) {
 #endif
 	(void)home;
 	return base + "/P5D-Port/P5D/library";
+}
+/* M1736: the saves live inside the library, so switching to an empty folder looked like they were gone. When the new
+ * folder is empty and the current library has content, copy the whole library there in the background (the old folder is
+ * left untouched as a backup) and switch only when the copy finished. An already-populated folder is used as it is. */
+static bool looks_like_library(const std::string &p) {   /* M1747: a real library, not a folder with leftovers */
+	return exists(p + "/firmware") && exists(p + "/decrypted");
+}
+static bool prune_empty_dirs(const std::string &p) {   /* M1747: remove empty directories (leftovers); returns true if p is gone */
+	DIR *d = opendir(p.c_str()); if (!d) return false;
+	bool any = false;
+	while (struct dirent *e = readdir(d)) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+		const std::string a = p + "/" + e->d_name;
+		struct stat st; if (stat(a.c_str(), &st) != 0) { any = true; continue; }
+		if (S_ISDIR(st.st_mode)) { if (!prune_empty_dirs(a)) any = true; }
+		else any = true;
+	}
+	closedir(d);
+	if (!any) { rmdir(p.c_str()); return true; }
+	return false;
+}
+static bool dir_has_entries(const std::string &p) {
+	DIR *d = opendir(p.c_str()); if (!d) return false;
+	bool any = false;
+	while (struct dirent *e = readdir(d)) { if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) { any = true; break; } }
+	closedir(d);
+	return any;
+}
+/* a portable recursive copy (the runtime's win32_compat.h force-include defines a "sync" macro, so no <filesystem>) */
+static bool copy_tree(const std::string &src, const std::string &dst) {
+	make_dir(dst);
+	DIR *d = opendir(src.c_str()); if (!d) return false;
+	bool ok = true;
+	while (struct dirent *e = readdir(d)) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+		const std::string a = src + "/" + e->d_name, b = dst + "/" + e->d_name;
+		struct stat st;
+		if (stat(a.c_str(), &st) != 0) { ok = false; continue; }
+		if (S_ISDIR(st.st_mode)) { ok = copy_tree(a, b) && ok; continue; }
+		FILE *in = fopen(a.c_str(), "rb");
+		if (!in) { ok = false; continue; }
+		FILE *out = fopen(b.c_str(), "wb");
+		if (!out) { fclose(in); ok = false; continue; }
+		static thread_local char buf[1 << 20]; size_t n;
+		while ((n = fread(buf, 1, sizeof buf, in)) > 0) if (fwrite(buf, 1, n, out) != n) { ok = false; break; }
+		fclose(in); fclose(out);
+	}
+	closedir(d);
+	return ok;
+}
+static bool delete_tree(const std::string &p) {   /* (used only for a move: the source after a complete copy) */
+	DIR *d = opendir(p.c_str()); if (!d) return remove(p.c_str()) == 0;
+	bool ok = true;
+	while (struct dirent *e = readdir(d)) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+		const std::string a = p + "/" + e->d_name;
+		struct stat st;
+		if (stat(a.c_str(), &st) != 0) { ok = false; continue; }
+		if (S_ISDIR(st.st_mode)) ok = delete_tree(a) && ok; else if (remove(a.c_str()) != 0) ok = false;
+	}
+	closedir(d);
+	if (ok) rmdir(p.c_str());
+	return ok;
+}
+/* M1738: a true cross-volume move, file by file: each file is copied to the new folder and only then removed from the
+ * old one, so the two disks never hold the whole library twice (the total stays about one library). A failure rolls the
+ * already-moved files back, so the library is never split between the two folders. */
+static bool move_files_progressive(const std::string &src, const std::string &dst, const std::string &rel,
+                                   std::vector<std::string> &moved, std::string &err) {
+	make_dir(dst);
+	DIR *d = opendir(src.c_str());
+	if (!d) { err = src; return false; }
+	while (struct dirent *e = readdir(d)) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+		const std::string a = src + "/" + e->d_name, b = dst + "/" + e->d_name, r = rel.empty() ? e->d_name : rel + "/" + e->d_name;
+#ifdef _WIN32
+		{   /* M1744: check the link attribute FIRST -- a junction whose target is gone made stat() fail and aborted the
+			 * whole move (the target folder was rolled back and vanished). Links are re-created by the pipeline, never moved. */
+			const DWORD at = GetFileAttributesW(wide(a).c_str());
+			if (at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+		}
+#endif
+		struct stat st;
+		if (stat(a.c_str(), &st) != 0) {
+			fprintf(stderr, "move: skipping unreadable %s\n", a.c_str());
+			continue;
+		}
+		if (S_ISDIR(st.st_mode)) {
+			if (!move_files_progressive(a, b, r, moved, err)) { closedir(d); return false; }
+			rmdir(a.c_str());
+			continue;
+		}
+		FILE *in = fopen(a.c_str(), "rb"); if (!in) { err = a; closedir(d); return false; }
+		FILE *out = fopen(b.c_str(), "wb"); if (!out) { fclose(in); err = a; closedir(d); return false; }
+		static thread_local char buf[1 << 20]; size_t n; bool ok = true;
+		while ((n = fread(buf, 1, sizeof buf, in)) > 0) if (fwrite(buf, 1, n, out) != n) { ok = false; break; }
+		const bool bad = ferror(in) != 0;
+		fclose(in); fclose(out);
+		if (!ok || bad) { remove(b.c_str()); err = a; closedir(d); return false; }
+		if (remove(a.c_str()) != 0) {   /* copied but could not delete: leave it and report the library as moved */
+			fprintf(stderr, "move: copied %s but could not remove it\n", a.c_str());
+			continue;
+		}
+		moved.push_back(r);
+	}
+	closedir(d);
+	return true;
+}
+static bool move_library(const std::string &src, const std::string &dst, std::string &errpath) {
+#ifdef _WIN32
+	if (rmdir(dst.c_str()) == 0) {   /* a directory rename wants the name free */
+		if (MoveFileW(wide(src).c_str(), wide(dst).c_str())) return true;
+		make_dir(dst);
+	}
+#else
+	if (rename(src.c_str(), dst.c_str()) == 0) return true;
+#endif
+	std::vector<std::string> moved; std::string err;
+	if (move_files_progressive(src, dst, "", moved, err)) { rmdir(src.c_str()); return true; }
+	errpath = err;
+	/* roll back: put the already-moved files back so the library stays in one piece */
+	fprintf(stderr, "move: failed on %s -- rolling back\n", err.c_str());
+	for (const std::string &r : moved) {
+		const std::string a = src + "/" + r, b = dst + "/" + r;
+		FILE *in = fopen(b.c_str(), "rb"); if (!in) continue;
+		const std::string dir = a.substr(0, a.find_last_of('/'));
+		make_dir(dir);
+		FILE *out = fopen(a.c_str(), "wb"); if (!out) { fclose(in); continue; }
+		static thread_local char buf[1 << 20]; size_t n;
+		while ((n = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, n, out);
+		fclose(in); fclose(out);
+	}
+	delete_tree(dst);
+	make_dir(dst);   /* M1744: leave the folder the player picked in place */
+	return false;
+}
+static void move_log(const std::string &line) {
+	const std::string d = pref_dir();
+	if (d.empty()) return;
+	FILE *f = fopen((d + "launcher-move.log").c_str(), "a");
+	if (!f) return;
+	fprintf(f, "%s\n", line.c_str());
+	fclose(f);
+}
+static void game_folder_move_poll(void) {
+	if (!g_move_finished.exchange(false)) return;
+	if (!g_move_ok) { g_move_error = "移動失敗（" + g_move_error + "）：遊戲庫保持原樣，原位置不變"; return; }
+	if (g_move_clear_pref) prefs_set("p5d_libdir", ""); else prefs_set("p5d_libdir", g_move_to);
+	g_dump = g_move_to; make_dir(g_dump); library_scan();
+	g_move_error.clear();
+}
+static void switch_game_folder(const std::string &picked, bool is_default) {
+	if (picked.empty() || picked == g_dump) return;
+	const std::string old = g_dump;
+	make_dir(picked);
+	const bool target_lib = looks_like_library(picked);
+	const bool old_has = dir_has_entries(old) || exists(old + "/decrypted") || exists(old + "/firmware");
+	if (old_has && !target_lib) prune_empty_dirs(picked);   /* leftovers of an old failed move must not block the move */
+	const bool target_empty = !dir_has_entries(picked);
+	move_log(std::string("decide: target_empty=") + (target_empty ? "1" : "0") + " target_lib=" + (target_lib ? "1" : "0") + " old_has=" + (old_has ? "1" : "0"));
+	if (old_has && !target_lib && !target_empty) {
+		g_move_error = "目標文件夾裡有其它文件，且不是遊戲庫。請選擇一個空文件夾（或先在資源管理器裡清空它）。";
+		return;
+	}
+	if (old_has && !target_lib) {   /* move first, switch after: saves and builds travel with it */
+		g_move_to = picked; g_move_clear_pref = is_default;
+		g_move_ok = false; g_move_finished = false; g_move_running = true; g_move_error.clear();
+		move_log("move: " + old + " -> " + picked);
+		std::thread([old, picked] {
+			std::string errpath;
+			const bool ok = move_library(old, picked, errpath);
+			move_log(ok ? "move: done " + picked : "move: FAILED " + errpath);
+			if (!ok && !errpath.empty()) g_move_error = errpath;
+			g_move_ok = ok; g_move_running = false; g_move_finished = true;
+		}).detach();
+		return;
+	}
+	if (is_default) prefs_set("p5d_libdir", ""); else prefs_set("p5d_libdir", picked);
+	g_dump = picked; make_dir(g_dump); library_scan();
+}
+static void change_game_folder(void) {
+	g_move_error.clear();
+	const std::string picked = pick_folder_dialog(g_dump);
+	move_log("change: picked=\"" + picked + "\" current=\"" + g_dump + "\"");
+	if (picked.empty()) { g_move_error = "沒有選擇文件夾（文件夾對話框被取消）"; return; }
+	switch_game_folder(picked, false);
+}
+static void change_to_default_folder(void) {
+	g_move_error.clear();
+	const std::string def = library_default_dir();
+	move_log("default: target=\"" + def + "\" current=\"" + g_dump + "\"");
+	switch_game_folder(def, true);
+}
+static std::string library_dir(void) {
+	if (const char *d = getenv("ATIV_DUMP")) if (*d) return d;
+	{ auto it = g_prefs.find("p5d_libdir"); if (it != g_prefs.end() && !it->second.empty()) return it->second; }   /* M1732: the player's choice */
+	return library_default_dir();
 }
 
 static int task_cli(const std::string &t) {   /* ATIV_TASK */
@@ -2201,14 +3582,49 @@ static bool mac_preflight(void) {
 }
 #endif
 
-int main(int, char **) {
+int main(int argc, char **argv) {
 	g_root = find_root();
 	if (!exists(g_root + "/pipeline/vitarecomp.py")) {   /* (the launcher apart from its folder: run from inside the zip, or copied out alone) */
 		SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "P5D 移植版", "P5D 移植版找不到运行所需的文件。\n\n请重新下载完整的 exe（不要从压缩包/临时文件夹里直接运行），再打开它。", nullptr);
 		return 1;
 	}
+	prefs_load();   /* M1732: first, because library_dir honours the saved game-files folder */
 	g_dump = library_dir();
-	set_env("ATIV_DUMP", g_dump);   /* (the stages it runs: the same library whatever their own rule finds) */
+	make_dir(g_dump);   /* (a chosen folder on another drive may not exist yet: the library makes itself) */
+	/* M1740: no ATIV_DUMP in our own environment -- the child steps get it explicitly (proc_start) */
+	for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "--import-dlc")) {   /* the DLC copy without the window */
+		std::vector<std::string> a{python_exe(), "-c", p5d_dlc_script(), argv[i + 1], g_dump};
+		Proc p;
+		if (!proc_start(p, a, {})) { fprintf(stderr, "can't start python\n"); return 1; }
+		char buf[4096]; long n; while ((n = proc_read(p, buf, sizeof buf)) > 0) { fwrite(buf, 1, (size_t)n, stdout); fflush(stdout); }
+		int code = proc_wait(p); proc_done(p);
+		return code;
+	}
+#ifdef _WIN32
+	if (const char *rf = getenv("P5D_REPAIR_FGX")) {
+		if (*rf) {
+			std::string d; bool fixed = p5d_repair_fgx_profile(&d);
+			fprintf(stderr, "P5D_REPAIR_FGX: %s (%s)\n", fixed ? "repaired" : "unchanged", d.c_str());
+			if (const char *tp = getenv("TEMP")) {
+				std::string f = std::string(tp) + "\\p5d_fgx_result.txt";
+				FILE *fp = fopen(f.c_str(), "wb");
+				if (fp) { fprintf(fp, "%s (%s)\n", fixed ? "repaired" : "unchanged", d.c_str()); fclose(fp); }
+			}
+			return 0;
+		}
+	}
+#endif   /* (the stages it runs: the same library whatever their own rule finds) */
+#ifdef _WIN32
+	{   /* M1788: the headless self test of 添加到 Steam 庫 (P5D_STEAM_DIR / P5D_STEAM_STUB_DIR / P5D_STEAM_ADD[_OUT]) */
+		const char *sa = getenv("P5D_STEAM_ADD");
+		if (sa && *sa) {
+			std::string m; bool ok = p5d_steam_add(m);
+			fprintf(stderr, "STEAM_ADD: %s\n%s\n", ok ? "ok" : "failed", m.c_str());
+			if (const char *o = getenv("P5D_STEAM_ADD_OUT")) if (FILE *f = fopen(o, "wb")) { fprintf(f, "%s\n%s\n", ok ? "ok" : "failed", m.c_str()); fclose(f); }
+			return ok ? 0 : 1;
+		}
+	}
+#endif
 	const char *shot_path = getenv("ATIV_SHOT");
 #ifdef SIGPIPE
 	signal(SIGPIPE, SIG_IGN);
@@ -2225,6 +3641,14 @@ int main(int, char **) {
 	}
 #endif
 	if (const char *t = getenv("ATIV_TASK")) return task_cli(t);   /* (after the caches above: a task's steps run as the window's do) */
+	if (const char *ft = getenv("ATIV_FOLDER_TEST")) {   /* test hook: move the library to <folder>, report, exit */
+		make_dir(std::string(ft));
+		std::string err;
+		const bool ok = move_library(g_dump, std::string(ft), err);
+		fprintf(stderr, "[FOLDERTEST] %s -> %s ok=%d%s%s\n", g_dump.c_str(), ft, (int)ok, ok ? "" : " err=", ok ? "" : err.c_str());
+		move_log(ok ? "test: moved " + g_dump + " -> " + ft : "test: FAILED " + err);
+		return ok ? 0 : 1;
+	}
 	if (!shot_path) {   /* (the last launcher's log kept beside this one's) */
 		const std::string d = pref_dir();
 		if (!d.empty()) { g_log_file = d + "launcher.log"; remove((d + "launcher.prev.log").c_str()); rename(g_log_file.c_str(), (d + "launcher.prev.log").c_str()); }
@@ -2254,7 +3678,6 @@ int main(int, char **) {
 	info.Device = g_gpu; info.ColorTargetFormat = shot_path ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM : SDL_GetGPUSwapchainTextureFormat(g_gpu, win); info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
 	ImGui_ImplSDLGPU3_Init(&info);
 
-	prefs_load();
 	g_settings_writable = !shot_path || getenv("ATIV_PREFS");
 	if (g_settings_writable) settings_migrate();   /* (a screenshot run touches no one's settings but a test folder's) */
 	set_env("RECOMP_SETTINGS_SHARED", shared_path());   /* the games it starts read the same shared file (runtime/core/main.c) */

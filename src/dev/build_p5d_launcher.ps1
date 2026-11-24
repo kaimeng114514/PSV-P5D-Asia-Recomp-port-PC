@@ -65,15 +65,15 @@ if (-not (Test-Path $resObj) -or $Force -or ((Get-Item $rc).LastWriteTime -gt (G
 Set-Content -Path $rsp -Value '-DREPO_ROOT=\"C:/dev/nativ_src\"' -Encoding ascii
 if ($Force -or -not (Test-Path $hubObj) -or ((Get-Item (Join-Path $root 'launcher\hub.cpp')).LastWriteTime -gt (Get-Item $hubObj).LastWriteTime)) {
     Write-Host '  g++ launcher/hub.cpp'
-    & $gxx @common @imflags "-DP5D_LAUNCHER" "@$rsp" '-c' (Join-Path $root 'launcher\hub.cpp') '-o' $hubObj
+    & $gxx @common @imflags "-DP5D_LAUNCHER" "@$rsp" '-c' (Join-Path $root 'launcher\hub.cpp') '-lole32' '-lshell32' '-luuid' '-o' $hubObj
     if ($LASTEXITCODE -ne 0) { throw 'compile failed: launcher/hub.cpp' }
 }
 
 Write-Host "  link $exe"
-& $gxx @common '-mwindows' '-static' '-lpthread' "-specs=$specs" $resObj $hubObj @objs $sdlLib '-o' $exe
+& $gxx @common '-mwindows' '-static' '-lpthread' "-specs=$specs" $resObj $hubObj @objs $sdlLib '-lole32' '-lshell32' '-luuid' '-o' $exe
 if ($LASTEXITCODE -ne 0) {   # (mingw-w64 GCC also links its own default-manifest.o: retry without ours, a dev build)
     Write-Host '  link without the manifest (this mingw-w64 links its own default manifest)'
-    & $gxx @common '-mwindows' '-static' '-lpthread' $hubObj @objs $sdlLib '-o' $exe
+    & $gxx @common '-mwindows' '-static' '-lpthread' $hubObj @objs $sdlLib '-lole32' '-lshell32' '-luuid' '-o' $exe
     if ($LASTEXITCODE -ne 0) { throw 'link failed' }
 }
 Copy-Item (Join-Path $sdl 'bin\SDL3.dll') $outdir -Force

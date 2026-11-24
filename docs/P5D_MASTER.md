@@ -524271,3 +524271,77 @@ mapping and icons consistent, the pad sticks survive the watch mode and Enter to
 FILES: C:/dev/nativ_src/runtime/ui/window.c (M1778-M1781), backup exes removed from the desktop.
 ANTI-FORGETTING: keywords M1776/M1777/M1778/M1779/M1780/M1781 device switch, glyph repaint, watch-mode sticks, pad START.
 LOOKUP: 18.5212 = M1776-M1781 -> 18.5211 [glyph device switch], 18.5210 [sticks], 18.5209 [watch flag], 18.5208 [packaging], 18.5207 [Enter latch].
+### 18.5213 M1782 launcher: the 其他設置 page and the save-folder view
+
+DELIVERY: the tab bar is 主頁 / 畫質選項 / 其他設置 / 金手指 / MOD. The new page shows the saves' folder
+(<library>/decrypted/PCSH10109/recomp/fs/savedata0 -- runtime/core/apputil.c: savedata0: is <RECOMP_FS>/savedata0),
+"打開存檔文件夾" (open_folder creates it first; ShellExecuteW, not SDL_OpenURL -- M1733) and "複製存檔路徑".
+The path is derived from g_dump at draw time, so moving the library follows.
+FILES: src/launcher/hub.cpp.
+
+### 18.5214 M1783-M1785 launcher: selecting the ROM folder imports it (and never builds; a remembered path is not a pick)
+
+PROBLEM: players who had only chosen their ROM folder read the still-red ① status as a failed import; the import only
+ran as the first build step. FIX: choosing a folder starts import ONLY (add --no-build + import: decrypt ->
+decrypted/PCSH10109/app0, then elf/eboot.bin.elf + version) in the background; the ① line shows "已導入（正在校驗版本…）"
+immediately and "已導入：...（版本）" when done, "導入失敗" + the log otherwise. Selection never starts a build.
+The path is remembered (launcher.ini p5d_rom_path), but a REMEMBERED path is not a pick: at start-up nothing imports and
+the line stays "尚未導入：已記住上次的遊戲文件夾..." (the first build auto-imported on launch from the saved path and read
+已導入 over a library with no game -- reported 2026-11-24).
+FILES: src/launcher/hub.cpp. VERIFICATION: test library via P5D_STEAM/ATIV_DUMP style env; user confirmed.
+
+### 18.5215 M1786 launcher: 撤銷導入 (undo the import, keep the build)
+
+"撤銷導入" beside the folder picker (enabled once imported): a confirmation popup, then elf/ and version are deleted,
+the remembered folder cleared, library_scan() rescans. recomp/ (the built game), recomp/fs (saves) and app0 stay, so the
+game remains playable and the importer can be re-run (added so the import flow could be tested on a machine that had
+already built). FILES: src/launcher/hub.cpp.
+
+### 18.5216 M1787/M1794 launcher: the built-state lights; the library location moves into 其他設置
+
+Every file-related section now carries the same light as ①: green "遊戲已構建..." / grey "遊戲尚未構建..." (the
+buttons disabled before the build). M1794 moved ③ 遊戲構建後存放位置 from 主頁 into 其他設置, BEFORE 存檔位置, and made
+it build-gated: the whole library (game, saves, firmware, MODs) moves with the switch, so it is only offered once
+host_min.exe exists; 主頁 is renumbered ①ROM ②固件 ③DLC ④構建 ⑤幀率.
+FILES: src/launcher/hub.cpp.
+
+### 18.5217 M1788-M1792 launcher: 添加到 Steam 庫 (shortcuts.vdf, a stable entry, the game's own art)
+
+DELIVERY: "其他設置 -> Steam -> 添加到 Steam 庫" appends one non-Steam shortcut to
+<steam>/userdata/<account>/config/shortcuts.vdf (Valve BINARY KeyValues: 0x00 object, 0x01 string, 0x02 int32, 0x07
+uint64; the file is backed up to shortcuts.vdf.bak and only appended to, unknown fields preserved). The shortcut's Exe is
+wscript.exe and its LaunchOptions point at %LOCALAPPDATA%/P5D-Port/P5D/P5D Launcher.vbs, a stable script that runs the
+newest extracted launcher -- so a launcher update (a new extraction folder) cannot break the Steam entry, and the desktop
+launcher keeps working. Steam must be CLOSED (it rewrites shortcuts.vdf when it exits); the add says so instead of
+corrupting. Accounts: every userdata/<digits>/config folder gets the entry; a second click reports "已在 Steam 庫中".
+ARTWORK (nothing bundled: the pictures are generated at the click from the player's own built game):
+  <appid>p.png     600x900  portrait cover from sce_sys/livearea/contents/bg0.png, sharp cover crop anchored RIGHT
+                            (the landscape source's centre slice showed only hands/coat)
+  <appid>.png      920x430  wide capsule from sce_sys/pic0.png
+  <appid>_hero.png 1920x620 game-page background from bg0.png, cover crop anchored TOP + bottom vignette
+  <appid>_header.png 460x215 legacy header from pic0.png
+First build wrote "_p.png" and put a 600x900 picture in the 920x430 slot, so Steam showed a stretched banner and no cover
+or background (reported 2026-11-24); both spellings of the appid (signed/unsigned) are written. Gate: only a built game
+can be added (light + disabled button + a check for recomp/game_host_min.exe in the add itself). PNG art via SDL3's own
+SDL_SavePNG/SDL_ScaleSurface.
+FILES: src/launcher/hub.cpp. VERIFICATION: headless self test (P5D_STEAM_ADD=1, P5D_STEAM_DIR/P5D_STEAM_STUB_DIR fakes)
+wrote shortcuts.vdf + 6 grid images into a fake Steam folder; Python parsed the VDF (one entry, the right fields).
+
+### 18.5218 M1793 release: v0.2.2 and a corrected Steam description
+
+RELEASE_VERSION becomes v0.2.2-p5d (payload stamp v0.2.2-p5d-<head>+<hash>; the game rebuilds once on the next start
+because the stamp changed). The Steam blurb no longer claims Steam Input/controller configuration: it starts through
+Steam (overlay, play time); the pad uses the port's own in-game support, so a Steam Input layout has no effect.
+FILES: src/dev/make_p5d_release.py, src/launcher/hub.cpp.
+
+### 18.5219 repo sync: the launcher source published at its current state
+
+The public repo's src/launcher/hub.cpp was the M1644 source-publication snapshot (v0.1.1 line) while the launcher the
+players get is built from the dev tree (v0.2.2). This commit publishes the current launcher source into the repo and adds
+the two link libraries the folder chooser needs (-lole32 -lshell32 -luuid; the dev tree's build script already had them),
+so "git clone && src/dev/build_p5d_launcher.ps1" links again. The repo's RELEASE_VERSION stays v0.1.1-p5d (its own release
+line): a build from the repo still shows the payload's version.
+FILES: src/launcher/hub.cpp, src/dev/build_p5d_launcher.ps1.
+ANTI-FORGETTING: keywords M1782-M1794 launcher, 其他設置, 存檔位置, 撤銷導入, 添加到 Steam 庫, shortcuts.vdf, Steam 封面,
+其他設置 存放位置, v0.2.2-p5d, repo launcher source sync.
+LOOKUP: 18.5219 = M1782-M1794 -> 18.5218 [v0.2.2], 18.5217 [Steam], 18.5216 [lights], 18.5215 [undo], 18.5214 [import].
