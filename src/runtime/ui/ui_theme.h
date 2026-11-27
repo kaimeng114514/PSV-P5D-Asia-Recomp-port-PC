@@ -73,10 +73,11 @@ inline bool segmented(const char *const *labels, int n, int *v) {
 	for (int i = 0; i < n; i++) {
 		if (i) ImGui::SameLine();
 		bool on = *v == i;
-		ImGui::PushStyleColor(ImGuiCol_Button, on ? with_alpha(accent, 0.18f) : card);
-		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, on ? with_alpha(accent, 0.24f) : card_hi);
-		ImGui::PushStyleColor(ImGuiCol_ButtonActive, with_alpha(accent, 0.30f));
-		ImGui::PushStyleColor(ImGuiCol_Text, on ? accent : muted);
+		/* the choice is read at a glance: the selected one is normal text on a raised ground, the others are dim */
+		ImGui::PushStyleColor(ImGuiCol_Button, on ? card_hi : with_alpha(card, 0.45f));
+		ImGui::PushStyleColor(ImGuiCol_ButtonHovered, card_hi);
+		ImGui::PushStyleColor(ImGuiCol_ButtonActive, card_hi);
+		ImGui::PushStyleColor(ImGuiCol_Text, on ? text : with_alpha(muted, 0.75f));
 		if (ImGui::Button(labels[i]) && !on) { *v = i; ch = true; }
 		ImGui::PopStyleColor(4);
 	}
