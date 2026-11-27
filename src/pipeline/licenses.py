@@ -9,6 +9,8 @@ looks in its ux0/license; every licence that decrypts a copy, and every one a fo
                                            NoNpDrm's ux0:nonpdrm/license, and each ux0:app/<title> and
                                            ux0:addcont/<title>/<add-on> folder's sce_sys/package/work.bin
   licenses.py vita3k [folder]              from a Vita3K install's ux0/license (its default folders, or the one named)
+  licenses.py import-zrif <zRIF>           the text licence pkg2zip/NoNpDrm use (base64 of a RIF; a leading
+                                           content id is accepted too). Your own licence only.
   licenses.py find <content id>            the kept licence's path (exit 1: none)
   licenses.py selftest
 
@@ -18,15 +20,40 @@ with the NoNpDrm plugin on, the game gets one of the kind kept here.
 """
 from __future__ import annotations
 
+import base64
 import ftplib
 import os
 import sys
+import zlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "decrypt"))
 from vitadecrypt import rif as RIF  # noqa: E402
 from datadir import library_dir  # noqa: E402
 
 FAKE_AID = 0x0123456789ABCDEF
+
+# zRIF: pkg2zip's text form of a licence -- base64 of the RIF, deflated with a preset dictionary (its zrif2rif.py).
+# It is the same entitlement as a .rif/work.bin, only pasted instead of picked; keep only your own.
+_ZRIF_DICT_B64 = b"eNpjYBgFo2AU0AsYAIElGt8MRJiDCAsw3xhEmIAIU4N4AwNdRxcXZ3+/EJCAkW6Ac7C7ARwYgviuQAaIdoPSzlDaBUo7QmknIM3ACIZM78+u7kx3VWYEAGJ9HV0="
+_zrif_dict: bytes | None = None
+
+
+def zrif_dict() -> bytes:
+    global _zrif_dict
+    if _zrif_dict is None:
+        _zrif_dict = zlib.decompress(base64.b64decode(_ZRIF_DICT_B64))
+    return _zrif_dict
+
+
+def zrif_to_rif(text: str) -> bytes:
+    """A zRIF string -> its RIF bytes (pkg2zip's zrif2rif.py; a leading "<content id> " is accepted)."""
+    tok = text.split()[-1] if text.split() else ""
+    if not tok:
+        raise ValueError("empty zRIF")
+    raw = base64.b64decode(tok)
+    d = zlib.decompressobj(wbits=10, zdict=zrif_dict())
+    return d.decompress(raw) + d.flush()
+
 
 
 def store_dir() -> str:
@@ -223,6 +250,13 @@ def selftest() -> None:
             f.write(fake)
         assert [s for s, _c, _f in import_paths([dupe_path])] == ["known"]
         assert kept() == ["UP9000-PCSA00107_00-KZV0000000000000"]
+        # zRIF: a RIF through pkg2zip's text form and back
+        c = zlib.compressobj(level=9, wbits=10, memLevel=8, zdict=zrif_dict())
+        blob = c.compress(fake) + c.flush()
+        blob += b"\0" * ((3 - len(blob) % 3) % 3)
+        z = base64.b64encode(blob).decode("ascii")
+        assert zrif_to_rif(z) == fake
+        assert zrif_to_rif("UP9000-PCSA00107_00-KZV0000000000000 " + z) == fake
     print("licenses.py self-test: OK")
 
 
@@ -240,6 +274,16 @@ def main(argv: list[str]) -> int:
         p = find(args[0])
         print(p)
         return 0 if p else 1
+    if cmd == "import-zrif" and len(args) == 1:
+        try:
+            rif = zrif_to_rif(args[0])
+        except (ValueError, zlib.error) as exc:
+            print(f"not a zRIF ({exc}); paste the string pkg2zip's rif2zrif prints, your own licence only", file=sys.stderr)
+            return 1
+        status, cid = add_bytes(rif)
+        print(f"{status:8s} {cid or '-'}  (zRIF)")
+        print(f"{'1' if status == 'added' else '0'} licences added, {'1' if status == 'known' else '0'} already kept -- {len(kept())} kept in all")
+        return 0 if status in ("added", "known") else 1
     if cmd == "import" and args:
         results = import_paths(args)
     elif cmd == "vita3k":

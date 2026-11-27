@@ -2501,6 +2501,8 @@ static std::string g_p5d_rom_path;      /* the folder the player picked: a copy 
 static std::string g_p5d_rom_tried;     /* the path an import was started for in this session ("" until a real pick) */
 static int g_p5d_rom_kind;               /* 0: a game folder; 1: a PKG file (+ its licence) */
 static std::string g_p5d_lic_path;       /* the PKG's licence file (.rif / work.bin), when the player gives one */
+static bool g_p5d_lic_zrif;             /* the licence came as a pasted zRIF (kept in the licence store) */
+static char g_p5d_zrif_buf[4096];       /* the popup's zRIF text */
 static bool g_p5d_undo_ask;             /* the 撤銷導入 confirmation popup is open */
 static std::string g_p5d_steam_msg;     /* the last 添加到 Steam 庫 result (shown under the button) */
 static bool g_p5d_steam_ok;
@@ -2557,7 +2559,7 @@ static void p5d_log_drawer(void) {   /* the whole log, on demand (a failed build
 /* the `add` stage's arguments: a game folder, or a PKG file with its licence (--license .rif / work.bin) */
 static std::vector<std::string> p5d_add_args(bool nobuild) {
 	std::vector<std::string> a{"add", g_p5d_rom_path};
-	if (g_p5d_rom_kind == 1 && !g_p5d_lic_path.empty()) { a.push_back("--license"); a.push_back(g_p5d_lic_path); }
+	if (g_p5d_rom_kind == 1 && !g_p5d_lic_zrif && !g_p5d_lic_path.empty()) { a.push_back("--license"); a.push_back(g_p5d_lic_path); }
 	if (nobuild) a.push_back("--no-build");
 	return a;
 }
@@ -2977,11 +2979,30 @@ static void p5d_ui(SDL_Window *win) {
 		if (ImGui::Button("導入 PKG…")) { static const SDL_DialogFileFilter pkgf[] = {{"PS Vita package", "pkg"}}; pick_file(win, &g_p5d_rom_path, pkgf, 1); }
 		ImGui::SameLine();
 		if (!g_p5d_rom_path.empty()) { ui::dot(ui::ready); ImGui::TextDisabled("PKG 已導入"); } else ImGui::TextDisabled("尚未導入 PKG");
-		if (ImGui::Button("導入許可證…")) pick_file(win, &g_p5d_lic_path, nullptr, 0);
+		if (ImGui::Button("導入許可證…")) { g_p5d_lic_zrif = false; pick_file(win, &g_p5d_lic_path, nullptr, 0); }
 		ImGui::SameLine();
-		if (!g_p5d_lic_path.empty()) { ui::dot(ui::ready); ImGui::TextDisabled("許可證已導入"); } else ImGui::TextDisabled("尚未導入許可證（PKG 解密需要，一次即可）");
+		if (ImGui::Button("粘貼 zRIF…")) ImGui::OpenPopup("p5d_zrif");
+		ImGui::SameLine();
+		if (g_p5d_lic_zrif) { ui::dot(ui::ready); ImGui::TextDisabled("許可證已導入（zRIF）"); }
+		else if (!g_p5d_lic_path.empty()) { ui::dot(ui::ready); ImGui::TextDisabled("許可證已導入"); }
+		else ImGui::TextDisabled("尚未導入許可證（PKG 解密需要，一次即可）");
 		static std::string lic_imported;
 		if (!g_p5d_lic_path.empty() && g_p5d_lic_path != lic_imported) { lic_imported = g_p5d_lic_path; p5d_import_licence(); }
+		if (ImGui::BeginPopup("p5d_zrif")) {
+			ImGui::TextUnformatted("粘貼你自己授權產生的 zRIF（pkg2zip 的 rif2zrif，或 NoNpDrm 生態）");
+			ImGui::TextDisabled("只能是你自己的授權；社區分享的 zRIF 屬盜版，請勿使用。");
+			ImGui::InputTextMultiline("##zrif", g_p5d_zrif_buf, sizeof g_p5d_zrif_buf, ImVec2(em * 46, em * 4.0f));
+			if (ui::primary_button("導入 zRIF")) {
+				g_p5d_lic_zrif = true;
+				g_p5d_lic_path.clear();
+				prefs_erase("p5d_lic_path");
+				task_start("導入 zRIF", "licences", "", {step("導入 zRIF", vitarecomp({"licenses", "import-zrif", std::string(g_p5d_zrif_buf)}))});
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("取消")) ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
 	} else {
 		if (ImGui::Button("選擇遊戲文件夾…")) pick_folder(win, &g_p5d_rom_path);
 		ImGui::SameLine(); ImGui::TextDisabled("%s", g_p5d_rom_path.empty() ? "（或直接點「開始構建」使用已導入的拷貝）" : g_p5d_rom_path.c_str());
@@ -3051,7 +3072,7 @@ static void p5d_ui(SDL_Window *win) {
 	if (built) { ui::dot(ui::ready); ImGui::TextUnformatted("已構建：可隨時啟動遊戲"); }
 	else if (imported) { ui::dot(ui::accent); ImGui::TextUnformatted("已導入，等待構建（AOT 重編譯 + 鏈接，約 2–6 分鐘）"); }
 	else { ui::dot(ui::muted); ImGui::TextUnformatted(g_p5d_rom_kind == 1 ? "導入 PKG 與許可證後點擊右側按鈕（會自動解密、識別版本並編譯）" : "導入遊戲後點擊右側按鈕"); }
-	ImGui::BeginDisabled(busy || (!imported && (g_p5d_rom_path.empty() || (g_p5d_rom_kind == 1 && g_p5d_lic_path.empty()))));
+	ImGui::BeginDisabled(busy || (!imported && (g_p5d_rom_path.empty() || (g_p5d_rom_kind == 1 && !g_p5d_lic_zrif && g_p5d_lic_path.empty()))));
 	if (ui::primary_button(built ? "重新構建" : "開始構建")) p5d_start_build();
 	ImGui::EndDisabled();
 	ImGui::SameLine(); ImGui::TextDisabled("（會自動解密、識別版本並編譯成全原生程序）");
