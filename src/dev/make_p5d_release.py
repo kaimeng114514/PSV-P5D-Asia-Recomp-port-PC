@@ -65,7 +65,7 @@ hints show the keys).
 A new launcher version rebuilds the game once on its next start (the launcher checks the build automatically,
 a few minutes); later starts are instant.
 
-**Version 0.1.1. Controls (keyboard and mouse):** arrow keys move the menus; Enter/Space confirms; Backspace goes back; Esc opens
+**Version 0.2.4. Controls (keyboard and mouse):** arrow keys move the menus; Enter/Space confirms; Backspace goes back; Esc opens
 the pause menu (and leaves it through the game's own back). In the pause menu the mouse wheel selects, the left
 button confirms and the right button returns; in the setting pages Esc/Backspace/right click return too (the port
 sends the game's own back chord). Q/E are per-screen: on the COMMUNITY screens they are the L/R shoulders (character switch), on the
@@ -83,7 +83,7 @@ All building happens on your own computer; nothing is uploaded. The game data an
 Licensed under GPL-2.0 (see LICENSE); third-party licences are listed in THIRD_PARTY.md.
 """
 
-RELEASE_VERSION = "v0.2.3-p5d"
+RELEASE_VERSION = "v0.2.4-p5d"
 PROVISION_VERSION = "2"   # bump when the packaging rules themselves change (part of the payload stamp)   # written into the payload's version.txt: ready builds against this, so a launch doesn't rebuild
 FNV_OFFSET, FNV_PRIME = 1469598103934665603, 1099511628211
 
