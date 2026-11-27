@@ -2570,11 +2570,15 @@ static void p5d_start_build(void) {
 	build_steps(steps, "PCSH10109");   /* analyse, recompile, compile: the same "@@" steps the hub's card runs */
 	task_start("構建 女神異聞錄5：星夜熱舞", "build", "PCSH10109", steps);
 }
-/* 導入許可證：拷進啟動器的許可證庫（按內容 ID），之後這款遊戲的 PKG 導入就不再需要它 */
-static void p5d_import_licence(void) {
-	if (g_p5d_lic_path.empty()) return;
-	prefs_set("p5d_lic_path", g_p5d_lic_path);
-	task_start("導入許可證", "licences", "", {step("導入許可證", vitarecomp({"licenses", "import", g_p5d_lic_path}))});
+/* PKG 流程：許可證先收進許可證庫，再解密/導入 PKG —— 選好 PKG 與許可證後自動跑，導完顯示「已導入」；
+ * 之後的「④ 開始構建」只做編譯。 */
+static void p5d_start_pkg_flow(void) {
+	std::vector<Step> steps;
+	if (g_p5d_lic_zrif && g_p5d_zrif_buf[0]) steps.push_back(step("導入許可證（zRIF）", vitarecomp({"licenses", "import-zrif", std::string(g_p5d_zrif_buf)})));
+	else if (!g_p5d_lic_path.empty()) steps.push_back(step("導入許可證", vitarecomp({"licenses", "import", g_p5d_lic_path})));
+	steps.push_back(step("導入遊戲拷貝（解密 PKG）", vitarecomp(p5d_add_args(true))));
+	steps.push_back(step("導入（生成 ELF 與版本）", vitarecomp({"import", "PCSH10109"})));
+	task_start("導入 PKG", "import", "PCSH10109", steps);
 }
 static void p5d_start_import(void) {
 	/* M1783: decrypt + import ONLY (the button was later removed at the owner's request: picking the folder does it). */
@@ -2984,31 +2988,37 @@ static void p5d_ui(SDL_Window *win) {
 		if (ImGui::Button("導入 PKG…")) { static const SDL_DialogFileFilter pkgf[] = {{"PS Vita package", "pkg"}}; pick_file(win, &g_p5d_rom_path, pkgf, 1); }
 		ImGui::SameLine();
 		if (g_p5d_rom_path.empty()) ImGui::TextDisabled("尚未導入 PKG");
-		else if (g_p5d_rom_tried == g_p5d_rom_path || (imported && g && g->version == "1.00-pkg")) { ui::dot(ui::ready); ImGui::TextDisabled("PKG 已導入"); }
-		else { ui::dot(ui::muted); ImGui::TextDisabled("已選擇 PKG（尚未導入；點「開始構建」導入）"); }
+		else if (imported && g && g->version == "1.00-pkg") { ui::dot(ui::ready); ImGui::TextDisabled("PKG 已導入"); }
+		else if (busy && g_task.kind == "import") { ui::dot(ui::ready); ImGui::TextDisabled("已導入（正在解密／校驗 PKG…）"); }
+		else if (!g_failed.empty()) { ui::dot(ui::warn); ImGui::TextDisabled("導入失敗：請看下方日誌（多半是許可證缺失或不匹配；選好許可證後會自動重試）"); }
+		else if (!(g_p5d_lic_zrif || !g_p5d_lic_path.empty())) { ui::dot(ui::muted); ImGui::TextDisabled("已選擇 PKG（缺少許可證；選好後自動導入）"); }
+		else { ui::dot(ui::muted); ImGui::TextDisabled("已選擇 PKG（等待導入）"); }
 		if (ImGui::Button("導入許可證…")) { g_p5d_lic_zrif = false; pick_file(win, &g_p5d_lic_path, nullptr, 0); }
 		ImGui::SameLine(); ImGui::TextDisabled("或"); ImGui::SameLine();
 		if (ImGui::Button("粘貼 zRIF…")) ImGui::OpenPopup("p5d_zrif");
 		ImGui::SameLine();
-		if (g_p5d_lic_zrif) { ui::dot(ui::ready); ImGui::TextDisabled("許可證已導入（zRIF）"); }
-		else if (!g_p5d_lic_path.empty()) { ui::dot(ui::ready); ImGui::TextDisabled("許可證已導入"); }
+		const bool lic_ready = g_p5d_lic_zrif || !g_p5d_lic_path.empty();
+		if (g_p5d_lic_zrif) { ui::dot(ui::ready); ImGui::TextDisabled("許可證已就緒（zRIF）"); }
+		else if (!g_p5d_lic_path.empty()) { ui::dot(ui::ready); ImGui::TextDisabled("許可證已就緒"); }
 		else ImGui::TextDisabled("尚未導入許可證（PKG 解密需要，一次即可）");
-		static std::string lic_imported;
-		if (!g_p5d_lic_path.empty() && g_p5d_lic_path != lic_imported) { lic_imported = g_p5d_lic_path; p5d_import_licence(); }
 		if (ImGui::BeginPopup("p5d_zrif")) {
 			ImGui::TextUnformatted("粘貼你自己授權產生的 zRIF（pkg2zip 的 rif2zrif，或 NoNpDrm 生態）");
 			ImGui::TextDisabled("只能是你自己的授權；社區分享的 zRIF 屬盜版，請勿使用。");
 			ImGui::InputTextMultiline("##zrif", g_p5d_zrif_buf, sizeof g_p5d_zrif_buf, ImVec2(em * 46, em * 4.0f));
-			if (ui::primary_button("導入 zRIF")) {
-				g_p5d_lic_zrif = true;
-				g_p5d_lic_path.clear();
-				prefs_erase("p5d_lic_path");
-				task_start("導入 zRIF", "licences", "", {step("導入 zRIF", vitarecomp({"licenses", "import-zrif", std::string(g_p5d_zrif_buf)}))});
-				ImGui::CloseCurrentPopup();
-			}
+			if (ui::primary_button("導入 zRIF")) { g_p5d_lic_zrif = true; g_p5d_lic_path.clear(); prefs_erase("p5d_lic_path"); ImGui::CloseCurrentPopup(); }
 			ImGui::SameLine();
 			if (ImGui::Button("取消")) ImGui::CloseCurrentPopup();
 			ImGui::EndPopup();
+		}
+		/* 選好 PKG 就自動導入一次：庫裡已有的許可證直接使用；缺許可證會失敗並提示，選好許可證後自動重試。
+		 * 導完 ① 會顯示「已導入」，之後「④ 開始構建」只做編譯。 */
+		static bool lic_ready_last;
+		if (lic_ready != lic_ready_last) { lic_ready_last = lic_ready; g_p5d_rom_tried.clear(); }
+		const bool pkg_done = imported && g && g->version == "1.00-pkg";
+		if (!busy && !g_p5d_rom_path.empty() && !pkg_done && g_p5d_rom_tried != g_p5d_rom_path) {
+			g_p5d_rom_tried = g_p5d_rom_path;
+			prefs_set("p5d_lic_path", g_p5d_lic_path);
+			p5d_start_pkg_flow();
 		}
 	} else {
 		if (ImGui::Button("導入 mai 遊戲格式文件夾…")) pick_folder(win, &g_p5d_rom_path);
