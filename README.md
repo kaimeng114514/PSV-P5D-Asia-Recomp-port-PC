@@ -48,6 +48,21 @@
 
 ---
 
+## 测试人员致谢
+
+v0.1.0 的键鼠适配、界面键位与构建流程能走到今天，离不开参与测试的玩家朋友们。特别感谢以下测试人员（按提供顺序）：
+
+| 测试人员 | 主页 |
+|---|---|
+| **lris舒** | <https://b23.tv/gu15QzD> |
+| **空條** | <https://b23.tv/tjUa3Qf> |
+| **wufe** | <https://b23.tv/Vn35gnF> |
+| **fumi** | <https://www.douyin.com/user/MS4wLjABAAAAm4FfPdXRVCW3Mt-mXUtrnIxoRttsSizvzUcJ7FKq5bb14sSHoIte5NkwN5_bXRoS?from_tab_name=main> |
+
+感谢他们在 v0.1.0 期间参与实机测试与游玩反馈，帮助我们验证键鼠操作、界面流程与启动器构建体验。测试过程中发现的具体问题由开发者在各自验证环节定位与修复；以上名单仅为参与测试的致谢，不代表其对某一具体问题的验证。
+
+---
+
 ## ✨ 功能特色
 
 > 在保留原版画面／布局／节奏／判定数值的前提下，PC 移植版新增以下功能（均在启动器或游戏内直接使用，不修改游戏文件）：
@@ -114,7 +129,6 @@
   |---|---|---|---|
   | ![Switch Pro / Joy-Con 按键提示](docs/screenshots/pad_switch_ui.webp) | ![DualShock 4 / DualSense 按键提示](docs/screenshots/pad_dualshock_ui.webp) | ![Xbox 手柄按键提示](docs/screenshots/pad_xbox_ui.webp) | ![PC 键盘按键提示](docs/screenshots/pad_keyboard_ui.webp) |
 
-
 ---
 
 ## ✅ 完整通关验证
@@ -159,7 +173,6 @@
 | 2K（2560×1440） | **55–60 帧**（未开 AI 插帧） |
 | 双人 Fever 场景 | 轻微掉帧 |
 
-
 - 分辨率越高、内部渲染倍率越大（1080p=2x、2K=3x、4K=4x），GPU 压力明显增加；
 - 笔记本双显卡环境建议在 NVIDIA 控制面板中将启动器/游戏设为「高性能 NVIDIA 处理器」，避免误用核显；
 - 以上为社区实测参考值，不同硬件、驱动与后台负载下可能有所差异；
@@ -202,7 +215,6 @@
 > **更新启动器后**：启动器会自动发现构建过期并在下次启动时**重建一次**（会显示进度条），之后恢复秒进。
 
 ## 📦 源码
-
 
 - **源码快照**：[`src/`](src/) —— 移植工程源码（当前已与开发线 **v0.2.2** 对齐；含 pipeline / recompiler /
   runtime / decrypt / packs / third_party / launcher / dev）。即使本地工程被删除，也可以从本仓库恢复并重新构建。
@@ -298,19 +310,6 @@
 - `docs/screenshots/` 仅为开发进度截图（由本项目运行时输出、版权归 ATLUS/SEGA，可应要求移除）；
   `tools/release_audit.py` 对其显式允许，其余 `.png/.bmp` 仍按红线拒绝。
 - 本仓库以 **GPL-2** 发布。
-
-## 测试人员致谢
-
-v0.1.0 的键鼠适配、界面键位与构建流程能走到今天，离不开参与测试的玩家朋友们。特别感谢以下测试人员（按提供顺序）：
-
-| 测试人员 | 主页 |
-|---|---|
-| **lris舒** | <https://b23.tv/gu15QzD> |
-| **空條** | <https://b23.tv/tjUa3Qf> |
-| **wufe** | <https://b23.tv/Vn35gnF> |
-| **fumifum** | <https://www.douyin.com/user/MS4wLjABAAAAm4FfPdXRVCW3Mt-mXUtrnIxoRttsSizvzUcJ7FKq5bb14sSHoIte5NkwN5_bXRoS?from_tab_name=main> |
-
-感谢他们在 v0.1.0 期间参与实机测试与游玩反馈，帮助我们验证键鼠操作、界面流程与启动器构建体验。测试过程中发现的具体问题由开发者在各自验证环节定位与修复；以上名单仅为参与测试的致谢，不代表其对某一具体问题的验证。
 
 ## 致谢
 
