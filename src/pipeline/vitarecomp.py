@@ -252,6 +252,12 @@ def cmd_add(T, rest):
     r = subprocess.run([PY, os.path.join(R, "packs.py"), "info", os.path.realpath(T)], env=env_with(TOOLS_ENV), capture_output=True, text=True)
     ident = r.stdout.split() if r.returncode == 0 and len(r.stdout.split()) >= 4 else ["game", "-", "-", "-"]
     kind, tid, cid = ident[0], ident[1], ident[3]
+    ver = ident[2] if len(ident) > 2 else "-"
+    if "--verify-only" in rest:
+        # the library already holds an import of this game: read the copy's identity/version and change nothing
+        # (reading a PKG's header needs no licence, and nothing is decrypted -- the launcher's PKG check)
+        say(f"{tid}: {os.path.basename(T)} is {kind} version {ver} ({cid}) -- verified, nothing decrypted")
+        return
     if kind == "addon": die(f"{tid}: {os.path.basename(T)} is an add-on: nothing to add -- the game gets every add-on it asks for (runtime/core/apputil.c)", 0)
     if kind == "firmware": cmd_firmware(T); return
     if kind not in ("game", "update"): die(f"{T}: a {kind}, not a game or its update")

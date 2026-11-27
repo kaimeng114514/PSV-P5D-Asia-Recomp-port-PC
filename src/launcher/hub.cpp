@@ -2572,7 +2572,16 @@ static void p5d_start_build(void) {
 }
 /* PKG 流程：許可證先收進許可證庫，再解密/導入 PKG —— 選好 PKG 與許可證後自動跑，導完顯示「已導入」；
  * 之後的「④ 開始構建」只做編譯。 */
+/* the PKG's identity/version only (its header/SFO): no licence, no decryption -- for a library that has the game */
+static std::vector<std::string> p5d_verify_args(void) {
+	return {"add", g_p5d_rom_path, "--verify-only"};
+}
 static void p5d_start_pkg_flow(void) {
+	const Game *g = p5d_game();
+	if (g && g->imported) {   /* already imported: only check that this PKG is the same game/version */
+		task_start("校驗 PKG 版本", "import", "PCSH10109", {step("校驗 PKG 版本（免解密）", vitarecomp(p5d_verify_args()))});
+		return;
+	}
 	std::vector<Step> steps;
 	if (g_p5d_lic_zrif && g_p5d_zrif_buf[0]) steps.push_back(step("導入許可證（zRIF）", vitarecomp({"licenses", "import-zrif", std::string(g_p5d_zrif_buf)})));
 	else if (!g_p5d_lic_path.empty()) steps.push_back(step("導入許可證", vitarecomp({"licenses", "import", g_p5d_lic_path})));
@@ -2954,11 +2963,8 @@ static void p5d_ui(SDL_Window *win) {
 		int k = g_p5d_rom_kind;
 		if (ui::segmented(kinds, 2, &k)) { g_p5d_rom_kind = k; prefs_set("p5d_rom_kind", std::to_string(g_p5d_rom_kind)); g_p5d_rom_tried.clear(); }
 	}
-	if (imported && (g_p5d_rom_kind == 0 || g->version == "1.00-pkg")) {
+	if (imported) {
 		ui::dot(ui::ready); ImGui::Text("已導入：Persona 5 Dancing in Starlight（%s）", g->version.empty() ? "1.00" : g->version.c_str());
-	} else if (imported) {
-		/* the library already holds a copy (the folder version): a PKG chosen here is not imported yet, so say both */
-		ui::dot(ui::muted); ImGui::TextDisabled("庫中目前是文件夾導入的版本（%s）；導入本 PKG 後「開始構建」會替換它", g->version.empty() ? "1.00" : g->version.c_str());
 	}
 	else if (!g_p5d_rom_path.empty() && !busy && g_failed.rfind("僅導入", 0) == 0) {
 		/* the auto import of the picked copy failed (a licence, a version the pack does not play, a PKG that is not a
@@ -2988,7 +2994,7 @@ static void p5d_ui(SDL_Window *win) {
 		if (ImGui::Button("導入 PKG…")) { static const SDL_DialogFileFilter pkgf[] = {{"PS Vita package", "pkg"}}; pick_file(win, &g_p5d_rom_path, pkgf, 1); }
 		ImGui::SameLine();
 		if (g_p5d_rom_path.empty()) ImGui::TextDisabled("尚未導入 PKG");
-		else if (imported && g && g->version == "1.00-pkg") { ui::dot(ui::ready); ImGui::TextDisabled("PKG 已導入"); }
+		else if (imported) { ui::dot(ui::ready); ImGui::TextDisabled(busy && g_task.kind == "import" ? "已導入（正在校驗 PKG 版本…）" : "PKG 版本已校驗（庫中已有導入，免解密）"); }
 		else if (busy && g_task.kind == "import") { ui::dot(ui::ready); ImGui::TextDisabled("已導入（正在解密／校驗 PKG…）"); }
 		else if (!g_failed.empty()) { ui::dot(ui::warn); ImGui::TextDisabled("導入失敗：請看下方日誌（多半是許可證缺失或不匹配；選好許可證後會自動重試）"); }
 		else if (!(g_p5d_lic_zrif || !g_p5d_lic_path.empty())) { ui::dot(ui::muted); ImGui::TextDisabled("已選擇 PKG（缺少許可證；選好後自動導入）"); }
@@ -3014,8 +3020,8 @@ static void p5d_ui(SDL_Window *win) {
 		 * 導完 ① 會顯示「已導入」，之後「④ 開始構建」只做編譯。 */
 		static bool lic_ready_last;
 		if (lic_ready != lic_ready_last) { lic_ready_last = lic_ready; g_p5d_rom_tried.clear(); }
-		const bool pkg_done = imported && g && g->version == "1.00-pkg";
-		if (!busy && !g_p5d_rom_path.empty() && !pkg_done && g_p5d_rom_tried != g_p5d_rom_path) {
+		const bool already = imported && g;   /* the library holds a copy: version check only (no decryption, no licence) */
+		if (!busy && !g_p5d_rom_path.empty() && g_p5d_rom_tried != g_p5d_rom_path && (already || lic_ready)) {
 			g_p5d_rom_tried = g_p5d_rom_path;
 			prefs_set("p5d_lic_path", g_p5d_lic_path);
 			p5d_start_pkg_flow();
