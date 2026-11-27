@@ -2987,7 +2987,7 @@ static void p5d_ui(SDL_Window *win) {
 		else if (g_p5d_rom_tried == g_p5d_rom_path || (imported && g && g->version == "1.00-pkg")) { ui::dot(ui::ready); ImGui::TextDisabled("PKG 已導入"); }
 		else { ui::dot(ui::muted); ImGui::TextDisabled("已選擇 PKG（尚未導入；點「開始構建」導入）"); }
 		if (ImGui::Button("導入許可證…")) { g_p5d_lic_zrif = false; pick_file(win, &g_p5d_lic_path, nullptr, 0); }
-		ImGui::SameLine();
+		ImGui::SameLine(); ImGui::TextDisabled("或"); ImGui::SameLine();
 		if (ImGui::Button("粘貼 zRIF…")) ImGui::OpenPopup("p5d_zrif");
 		ImGui::SameLine();
 		if (g_p5d_lic_zrif) { ui::dot(ui::ready); ImGui::TextDisabled("許可證已導入（zRIF）"); }
