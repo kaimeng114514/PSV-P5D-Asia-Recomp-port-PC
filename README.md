@@ -308,6 +308,7 @@ v0.1.0 的键鼠适配、界面键位与构建流程能走到今天，离不开�
 | **lris舒** | <https://b23.tv/gu15QzD> |
 | **空條** | <https://b23.tv/tjUa3Qf> |
 | **wufe** | <https://b23.tv/Vn35gnF> |
+| **fumifum** | <https://www.douyin.com/user/MS4wLjABAAAAm4FfPdXRVCW3Mt-mXUtrnIxoRttsSizvzUcJ7FKq5bb14sSHoIte5NkwN5_bXRoS?from_tab_name=main> |
 
 感谢他们在 v0.1.0 期间参与实机测试与游玩反馈，帮助我们验证键鼠操作、界面流程与启动器构建体验。测试过程中发现的具体问题由开发者在各自验证环节定位与修复；以上名单仅为参与测试的致谢，不代表其对某一具体问题的验证。
 
