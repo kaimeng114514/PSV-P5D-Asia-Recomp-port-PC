@@ -698,7 +698,7 @@ def cmd_test(g):
         ("RECOMP_TOUCH", g.TEST_TOUCH), ("RECOMP_HEADLESS", "1"), ("RECOMP_FS", "fs"), ("RECOMP_LOG", "0"), ("RECOMP_SHOT", every or frames),
         ("RECOMP_SHOT_LAST", frames)])   # (a series too ends at the test frame: it ran on to the timeout, 15 minutes for shots it had long since taken)
     with open(os.path.join(td, "test.log"), "wb") as log:
-        timed(g.exe_argv(os.path.join(OUT, g.EXE)) + [os.path.join("..", g.BASE + ".img"), g.entry(), str(ENV.get("TEST_BUDGET") or "100000000000")], e, td, subprocess.DEVNULL, log,
+        timed(g.exe_argv(os.path.join(OUT, g.host())) + [os.path.join("..", g.BASE + ".img"), g.entry(), str(ENV.get("TEST_BUDGET") or "100000000000")], e, td, subprocess.DEVNULL, log,
               test_timeout(g))
     missed = os.path.join(td, "missed_functions.txt")
     if os.path.isfile(missed) and os.path.getsize(missed):

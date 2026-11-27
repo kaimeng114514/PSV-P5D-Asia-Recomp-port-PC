@@ -235,6 +235,11 @@ static std::vector<std::string> vitarecomp(std::initializer_list<std::string> ar
 	v.insert(v.end(), args);
 	return v;
 }
+static std::vector<std::string> vitarecomp(const std::vector<std::string> &args) {
+	std::vector<std::string> v{python_exe(), g_root + "/pipeline/vitarecomp.py"};
+	v.insert(v.end(), args.begin(), args.end());
+	return v;
+}
 static void open_folder(const std::string &p) {
 #ifdef _WIN32
 	/* M1733: not SDL_OpenURL -- it blocked the launcher's UI thread while the shell processed the open verb (the
@@ -2494,6 +2499,8 @@ static void p5d_open_path(const std::string &path) {   /* the shell's "open": NV
 }
 static std::string g_p5d_rom_path;      /* the folder the player picked: a copy of their game */
 static std::string g_p5d_rom_tried;     /* the path an import was started for in this session ("" until a real pick) */
+static int g_p5d_rom_kind;               /* 0: a game folder; 1: a PKG file (+ its licence) */
+static std::string g_p5d_lic_path;       /* the PKG's licence file (.rif / work.bin), when the player gives one */
 static bool g_p5d_undo_ask;             /* the 撤銷導入 confirmation popup is open */
 static std::string g_p5d_steam_msg;     /* the last 添加到 Steam 庫 result (shown under the button) */
 static bool g_p5d_steam_ok;
@@ -2547,17 +2554,24 @@ static void p5d_log_drawer(void) {   /* the whole log, on demand (a failed build
 	ImGui::EndChild();
 	ImGui::PopStyleColor();
 }
+/* the `add` stage's arguments: a game folder, or a PKG file with its licence (--license .rif / work.bin) */
+static std::vector<std::string> p5d_add_args(bool nobuild) {
+	std::vector<std::string> a{"add", g_p5d_rom_path};
+	if (g_p5d_rom_kind == 1 && !g_p5d_lic_path.empty()) { a.push_back("--license"); a.push_back(g_p5d_lic_path); }
+	if (nobuild) a.push_back("--no-build");
+	return a;
+}
 static void p5d_start_build(void) {
 	const Game *g = p5d_game();
 	std::vector<Step> steps;
-	if (!(g && g->imported) && !g_p5d_rom_path.empty()) steps.push_back(step("導入遊戲拷貝（解密並校驗版本）", vitarecomp({"add", g_p5d_rom_path})));
+	if (!(g && g->imported) && !g_p5d_rom_path.empty()) steps.push_back(step("導入遊戲拷貝（解密並校驗版本）", vitarecomp(p5d_add_args(false))));
 	build_steps(steps, "PCSH10109");   /* analyse, recompile, compile: the same "@@" steps the hub's card runs */
 	task_start("構建 女神異聞錄5：星夜熱舞", "build", "PCSH10109", steps);
 }
 static void p5d_start_import(void) {
 	/* M1783: decrypt + import ONLY (the button was later removed at the owner's request: picking the folder does it). */
 	std::vector<Step> steps;
-	steps.push_back(step("導入遊戲拷貝（解密）", vitarecomp({"add", g_p5d_rom_path, "--no-build"})));
+	steps.push_back(step("導入遊戲拷貝（解密）", vitarecomp(p5d_add_args(true))));
 	steps.push_back(step("導入（生成 ELF 與版本）", vitarecomp({"import", "PCSH10109"})));
 	task_start("僅導入 女神異聞錄5：星夜熱舞", "import", "PCSH10109", steps);
 }
@@ -2875,18 +2889,26 @@ static void p5d_ui(SDL_Window *win) {
 	 * only a real pick (the path changing this session) triggers the import. Selection never starts a build. */
 	static bool rom_loaded;
 	static std::string rom_seen;
+	static std::string lic_seen;
 	static bool rom_pending;
 	if (!rom_loaded) {
 		rom_loaded = true;
+		if (g_prefs.count("p5d_rom_kind")) g_p5d_rom_kind = atoi(g_prefs["p5d_rom_kind"].c_str()) ? 1 : 0;
 		if (g_p5d_rom_path.empty() && g_prefs.count("p5d_rom_path")) g_p5d_rom_path = g_prefs["p5d_rom_path"];
+		if (g_p5d_lic_path.empty() && g_prefs.count("p5d_lic_path")) g_p5d_lic_path = g_prefs["p5d_lic_path"];
 		rom_seen = g_p5d_rom_path;
+		lic_seen = g_p5d_lic_path;
 		rom_pending = false;
 	}
-	if (g_p5d_rom_path != rom_seen) {
+	if (g_p5d_rom_path != rom_seen || g_p5d_lic_path != lic_seen) {
 		rom_seen = g_p5d_rom_path;
+		lic_seen = g_p5d_lic_path;
 		g_p5d_rom_tried.clear();
-		rom_pending = !rom_seen.empty();
+		/* a PKG without its licence is not imported yet: the player picks the licence first (a kept licence needs none) */
+		rom_pending = !rom_seen.empty() && (g_p5d_rom_kind == 0 || !lic_seen.empty());
 		if (!rom_seen.empty()) prefs_set("p5d_rom_path", rom_seen);
+		prefs_set("p5d_lic_path", g_p5d_lic_path);
+		prefs_set("p5d_rom_kind", std::to_string(g_p5d_rom_kind));
 	}
 	if (rom_pending && (imported || busy)) rom_pending = false;
 	if (rom_pending) {
@@ -2899,7 +2921,7 @@ static void p5d_ui(SDL_Window *win) {
 	ImGui::SameLine(); ImGui::AlignTextToFramePadding();
 	ImGui::TextDisabled("Persona 5 Dancing in Starlight · PC 移植版 · 鍵盤鼠標 / 手柄 · %s", p5d_version().c_str());
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
-	ui::muted_wrapped("需要你自己的《女神異聞錄5：星夜熱舞》遊戲拷貝（PS Vita，PCSH10109 / 1.00 亞洲版）與 PS Vita 系統軟件（PSVUPDAT.PUP 3.74）。遊戲數據不會上傳，全部在本機構建。");
+	ui::muted_wrapped("需要你自己的《女神異聞錄5：星夜熱舞》遊戲拷貝（PS Vita，PCSH10109 / 1.00 亞洲版）：MaiDump／NoNpDrm 遊戲文件夾，或 **PKG 文件 + 許可證（.rif / work.bin）**；以及 PS Vita 系統軟件（PSVUPDAT.PUP 3.74）。遊戲數據不會上傳，全部在本機構建。");
 	ImGui::Dummy(ImVec2(0, em * 0.25f));
 	ui::muted_wrapped("為什麼不內含遊戲 ROM：遊戲本體、語音、影片與 PS Vita 系統固件都是 Sony / ATLUS 的版權內容，不能隨本移植版一起分發。"
 	                  "啟動器只提供工具：把你自己擁有的遊戲重新編譯成 PC 原生程序。解密、編譯、存檔都在你自己的電腦上完成，不會上傳、也不會放進這個啟動器裡。");
@@ -2915,30 +2937,44 @@ static void p5d_ui(SDL_Window *win) {
 			ImGui::Dummy(ImVec2(0, em * 0.5f));
 	/* ① the game copy */
 	ui::heading("① 遊戲 ROM", em * 1.25f);
+	{
+		static const char *const kinds[] = {"遊戲文件夾", "PKG 文件"};
+		int k = g_p5d_rom_kind;
+		if (ui::segmented(kinds, 2, &k)) { g_p5d_rom_kind = k; prefs_set("p5d_rom_kind", std::to_string(g_p5d_rom_kind)); g_p5d_rom_tried.clear(); }
+	}
 	if (imported) { ui::dot(ui::ready); ImGui::Text("已導入：Persona 5 Dancing in Starlight（%s）", g->version.empty() ? "1.00" : g->version.c_str()); }
 	else if (!g_p5d_rom_path.empty() && !busy && g_failed.rfind("僅導入", 0) == 0) {
-		/* the auto import of the picked folder failed (a licence, a version the pack does not play, a folder that is not
-		 * a game...): say so here instead of leaving an orange "will import" line forever. The log says why. */
-		ui::dot(ui::warn); ImGui::TextUnformatted("導入失敗：請看下方日誌（重新選擇遊戲文件夾可重試；「開始構建」也會先導入）");
+		/* the auto import of the picked copy failed (a licence, a version the pack does not play, a PKG that is not a
+		 * game...): say so here instead of leaving an orange "will import" line forever. The log says why. */
+		ui::dot(ui::warn); ImGui::TextUnformatted("導入失敗：請看下方日誌（重新選擇遊戲拷貝可重試；「開始構建」也會先導入）");
 		ImGui::TextDisabled("已選：%s", g_p5d_rom_path.c_str());
+		if (g_p5d_rom_kind == 1 && !g_p5d_lic_path.empty()) ImGui::TextDisabled("許可證：%s", g_p5d_lic_path.c_str());
 	}
 	else if (!g_p5d_rom_path.empty() && g_p5d_rom_tried == g_p5d_rom_path) {
 		/* this path was PICKED in this session and the auto import was started for it (the owner asked for
 		 * "select the folder -> 已導入"; the real state follows when the import ends). */
 		ui::dot(ui::ready);
 		if (busy && g_task.kind == "import") ImGui::TextUnformatted("已導入（正在校驗版本…）");
-		else ImGui::TextUnformatted("已導入（選擇的遊戲文件夾）");
+		else ImGui::TextUnformatted(g_p5d_rom_kind == 1 ? "已導入（選擇的 PKG 文件）" : "已導入（選擇的遊戲文件夾）");
 		ImGui::TextDisabled("已選：%s", g_p5d_rom_path.c_str());
+		if (g_p5d_rom_kind == 1 && !g_p5d_lic_path.empty()) ImGui::TextDisabled("許可證：%s", g_p5d_lic_path.c_str());
 	}
 	else if (!g_p5d_rom_path.empty()) {
 		/* a REMEMBERED path (launcher.ini) with nothing imported here is still "not imported": at start-up this used to
 		 * read 已導入 and even started a version check on a library that had no game (the fresh/test-library report). */
-		ui::dot(ui::warn); ImGui::TextUnformatted("尚未導入：已記住上次的遊戲文件夾，重新選擇它即可導入（或點「開始構建」）");
+		ui::dot(ui::warn); ImGui::TextUnformatted("尚未導入：已記住上次的遊戲拷貝，重新選擇它即可導入（或點「開始構建」）");
 		ImGui::TextDisabled("已選：%s", g_p5d_rom_path.c_str());
-	} else { ui::dot(ui::warn); ImGui::TextUnformatted("尚未導入遊戲：選擇你的遊戲文件夾（ux0:app/…，含 licence 的拷貝）"); }
+	} else { ui::dot(ui::warn); ImGui::TextUnformatted(g_p5d_rom_kind == 1 ? "尚未導入遊戲：選擇你的 PKG 文件（另需許可證 .rif / work.bin）" : "尚未導入遊戲：選擇你的遊戲文件夾（ux0:app/…，含 licence 的拷貝）"); }
 	ImGui::BeginDisabled(busy);
-	if (ImGui::Button("選擇遊戲文件夾…")) pick_folder(win, &g_p5d_rom_path);
-	ImGui::SameLine(); ImGui::TextDisabled("%s", g_p5d_rom_path.empty() ? "（或直接點「開始構建」使用已導入的拷貝）" : g_p5d_rom_path.c_str());
+	if (g_p5d_rom_kind == 1) {
+		if (ImGui::Button("選擇 PKG 文件…")) { static const SDL_DialogFileFilter pkgf[] = {{"PS Vita package", "pkg"}}; pick_file(win, &g_p5d_rom_path, pkgf, 1); }
+		ImGui::SameLine(); ImGui::TextDisabled("%s", g_p5d_rom_path.empty() ? "（PKG 文件）" : g_p5d_rom_path.c_str());
+		if (ImGui::Button("選擇許可證文件…")) pick_file(win, &g_p5d_lic_path, nullptr, 0);
+		ImGui::SameLine(); ImGui::TextDisabled("%s", g_p5d_lic_path.empty() ? "（.rif / work.bin；已保存過的許可證可留空）" : g_p5d_lic_path.c_str());
+	} else {
+		if (ImGui::Button("選擇遊戲文件夾…")) pick_folder(win, &g_p5d_rom_path);
+		ImGui::SameLine(); ImGui::TextDisabled("%s", g_p5d_rom_path.empty() ? "（或直接點「開始構建」使用已導入的拷貝）" : g_p5d_rom_path.c_str());
+	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
 	ImGui::BeginDisabled(busy || !imported);

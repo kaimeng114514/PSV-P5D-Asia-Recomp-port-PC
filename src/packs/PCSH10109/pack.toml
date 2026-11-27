@@ -27,6 +27,15 @@ status = "supported"
 # a hooked address. The 1.00 hooks therefore fit a MaiDump copy too; importing one used to be refused as "another
 # version or region, or a modified dump (MaiDump's eboot loads its _m modules)". This is what a homebrew-dumped
 # PCSH10109 on a Vita usually is (confirmed against the user's own desktop backup, 2026-11-06).
+[versions."1.00-pkg"]
+# A PKG of the same Asian 1.00 game, decrypted by the launcher itself (vitadecrypt; a PKG plus its licence):
+# the original PSN eboot without MaiDump's 152-byte loader stub, so its code segment is 0x321778 bytes
+# (MaiDump's is 0x321810) and its data segment loads at 0x81322000 (MaiDump's at 0x81325000) -- the same game
+# code at the same guest addresses, checked against 1.00-mai: 241 of the pack's 256 hook addresses are
+# byte-identical instructions and the 15 others are the movw constants that follow the data segment's shift.
+sha256 = "c01db433514d7d654973aadba1b2e4756f6b00d861c0ebd115cbd87dcb247ae8"
+status = "supported"
+
 [versions."1.00-mai"]
 sha256 = "1aae5b4bf4ed5677eba28014df8b2c507731885cf3c51e45c9cb789097cd8ec4"
 status = "supported"
