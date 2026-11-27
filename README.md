@@ -69,6 +69,10 @@
   | ![动态亮丽 0%（关闭）](docs/screenshots/vibrance_off_0pct.png) | ![动态亮丽 50%](docs/screenshots/vibrance_50pct.png) | ![动态亮丽 100%](docs/screenshots/vibrance_100pct.png) |
 
 - **DLC 支持**：启动器可导入追加内容（`reAddcont/PCSH10109`），显示已导入数量／大小，可一键移除；不导入不影响本体。
+
+  ![DLC 角色（明智吾郎）实机截图](docs/screenshots/dlc_akechi.png)
+
+  > 上图为导入 DLC 后的实机截图：DLC 角色明智吾郎在歌曲选择界面正常显示。
 - **游戏构建后存放位置可自定义**：启动器「其他設置 → 遊戲存放位置」可把构建后的游戏、存档、固件与 MOD 放到任意文件夹（记住选择；不选则用默认位置；改到空文件夹时会把现有游戏库连同存档一起移动过去（同盘瞬间；跨盘逐档移动，不占双份空间））。该功能在游戏构建完成后才可用。
 - **MOD 支持**：兼容 Reloaded-II 格式 MOD（`Mod.xml` + `Data/` 文件夹）；启动器内导入、显示封面／名称／作者／版本，
   逐个开关并持久化；启用后启动游戏自动替换 CPK 内同名资源。已用社区泳装 MOD 与自制裸体 MOD 实测模型替换成功。
