@@ -260,11 +260,29 @@ def pack(staging, stub, out):
     print(f"release exe: {out} ({os.path.getsize(out) / 2**20:.1f} MB, version {h:016X})")
 
 
+def deploy_desktop(out):
+    """Put the new launcher on the user's Desktop, replacing the old one (kept beside it as .old)."""
+    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    desk = os.path.join(home, "Desktop")
+    if not os.path.isdir(desk):
+        return
+    dst = os.path.join(desk, os.path.basename(out))
+    if os.path.isfile(dst):
+        if hashlib.sha256(open(dst, "rb").read()).hexdigest() == hashlib.sha256(open(out, "rb").read()).hexdigest():
+            print("desktop: already the new launcher")
+            return
+        shutil.move(dst, dst + ".old")
+        print("desktop: old launcher kept as", dst + ".old")
+    shutil.copy2(out, dst)
+    print("desktop: new launcher ->", dst)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--staging", default=os.path.join(WORK, "payload"))
     ap.add_argument("--out", default=os.path.join(WORK, "P5D Windows移植版启动器.exe"))
     ap.add_argument("--skip-copy", action="store_true")
+    ap.add_argument("--no-desktop", action="store_true", help="do not replace the launcher on the Desktop")
     a = ap.parse_args()
     stub = os.path.join(WORK, "p5d_stub.exe")
     if True:   # always rebuild the stub so icon/resource changes take effect
@@ -289,6 +307,8 @@ def main():
     if not a.skip_copy:
         stage(a.staging)
     pack(a.staging, stub, a.out)
+    if not a.no_desktop:
+        deploy_desktop(a.out)
     return 0
 
 
