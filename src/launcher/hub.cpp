@@ -2929,7 +2929,7 @@ static void p5d_ui(SDL_Window *win) {
 	ImGui::SameLine(); ImGui::AlignTextToFramePadding();
 	ImGui::TextDisabled("Persona 5 Dancing in Starlight · PC 移植版 · 鍵盤鼠標 / 手柄 · %s", p5d_version().c_str());
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
-	ui::muted_wrapped("需要你自己的《女神異聞錄5：星夜熱舞》遊戲拷貝（PS Vita，PCSH10109 / 1.00 亞洲版）：MaiDump／NoNpDrm 遊戲文件夾，或 **PKG 文件 + 許可證（.rif / work.bin）**；以及 PS Vita 系統軟件（PSVUPDAT.PUP 3.74）。遊戲數據不會上傳，全部在本機構建。");
+	ui::muted_wrapped("需要你自己的《女神異聞錄5：星夜熱舞》遊戲拷貝（PS Vita，PCSH10109 / 1.00 亞洲版）：mai 遊戲格式文件夾（MaiDump），或 PKG 格式遊戲文件 + 許可證（.rif / work.bin 或 zRIF）；以及 PS Vita 系統軟件（PSVUPDAT.PUP 3.74）。遊戲數據不會上傳，全部在本機構建。");
 	ImGui::Dummy(ImVec2(0, em * 0.25f));
 	ui::muted_wrapped("為什麼不內含遊戲 ROM：遊戲本體、語音、影片與 PS Vita 系統固件都是 Sony / ATLUS 的版權內容，不能隨本移植版一起分發。"
 	                  "啟動器只提供工具：把你自己擁有的遊戲重新編譯成 PC 原生程序。解密、編譯、存檔都在你自己的電腦上完成，不會上傳、也不會放進這個啟動器裡。");
@@ -2946,11 +2946,16 @@ static void p5d_ui(SDL_Window *win) {
 	/* ① the game copy */
 	ui::heading("① 遊戲 ROM", em * 1.25f);
 	{
-		static const char *const kinds[] = {"遊戲文件夾", "PKG 文件"};
+		static const char *const kinds[] = {"mai 遊戲格式文件夾", "PKG 格式遊戲文件"};
 		int k = g_p5d_rom_kind;
 		if (ui::segmented(kinds, 2, &k)) { g_p5d_rom_kind = k; prefs_set("p5d_rom_kind", std::to_string(g_p5d_rom_kind)); g_p5d_rom_tried.clear(); }
 	}
-	if (imported) { ui::dot(ui::ready); ImGui::Text("已導入：Persona 5 Dancing in Starlight（%s）", g->version.empty() ? "1.00" : g->version.c_str()); }
+	if (imported && (g_p5d_rom_kind == 0 || g->version == "1.00-pkg")) {
+		ui::dot(ui::ready); ImGui::Text("已導入：Persona 5 Dancing in Starlight（%s）", g->version.empty() ? "1.00" : g->version.c_str());
+	} else if (imported) {
+		/* the library already holds a copy (the folder version): a PKG chosen here is not imported yet, so say both */
+		ui::dot(ui::muted); ImGui::TextDisabled("庫中目前是文件夾導入的版本（%s）；導入本 PKG 後「開始構建」會替換它", g->version.empty() ? "1.00" : g->version.c_str());
+	}
 	else if (!g_p5d_rom_path.empty() && !busy && g_failed.rfind("僅導入", 0) == 0) {
 		/* the auto import of the picked copy failed (a licence, a version the pack does not play, a PKG that is not a
 		 * game...): say so here instead of leaving an orange "will import" line forever. The log says why. */
@@ -2970,15 +2975,17 @@ static void p5d_ui(SDL_Window *win) {
 	else if (!g_p5d_rom_path.empty()) {
 		/* a REMEMBERED path (launcher.ini) with nothing imported here is still "not imported": at start-up this used to
 		 * read 已導入 and even started a version check on a library that had no game (the fresh/test-library report). */
-		ui::dot(ui::warn); ImGui::TextUnformatted("尚未導入：已記住上次的遊戲拷貝，重新選擇它即可導入（或點「開始構建」）");
+		ui::dot(ui::muted); ImGui::TextUnformatted("尚未導入：已記住上次的遊戲拷貝，重新選擇它即可導入（或點「開始構建」）");
 		ImGui::TextDisabled("已選：%s", g_p5d_rom_path.c_str());
-	} else { ui::dot(ui::warn); ImGui::TextUnformatted(g_p5d_rom_kind == 1 ? "尚未導入遊戲：選擇你的 PKG 文件（另需許可證 .rif / work.bin）" : "尚未導入遊戲：選擇你的遊戲文件夾（ux0:app/…，含 licence 的拷貝）"); }
+	} else { ui::dot(ui::muted); ImGui::TextUnformatted(g_p5d_rom_kind == 1 ? "尚未導入遊戲：選擇你的 PKG 格式遊戲文件（另需許可證 .rif / work.bin 或 zRIF）" : "尚未導入遊戲：選擇你的 mai 遊戲格式文件夾（ux0:app/…，含 licence 的拷貝）"); }
 	ImGui::BeginDisabled(busy);
 	if (g_p5d_rom_kind == 1) {
 		/* PKG 流程：先「導入 PKG」與「導入許可證」各完成一次，再點「④ 開始構建」；構建成功後即可啟動遊戲 */
 		if (ImGui::Button("導入 PKG…")) { static const SDL_DialogFileFilter pkgf[] = {{"PS Vita package", "pkg"}}; pick_file(win, &g_p5d_rom_path, pkgf, 1); }
 		ImGui::SameLine();
-		if (!g_p5d_rom_path.empty()) { ui::dot(ui::ready); ImGui::TextDisabled("PKG 已導入"); } else ImGui::TextDisabled("尚未導入 PKG");
+		if (g_p5d_rom_path.empty()) ImGui::TextDisabled("尚未導入 PKG");
+		else if (g_p5d_rom_tried == g_p5d_rom_path || (imported && g && g->version == "1.00-pkg")) { ui::dot(ui::ready); ImGui::TextDisabled("PKG 已導入"); }
+		else { ui::dot(ui::muted); ImGui::TextDisabled("已選擇 PKG（尚未導入；點「開始構建」導入）"); }
 		if (ImGui::Button("導入許可證…")) { g_p5d_lic_zrif = false; pick_file(win, &g_p5d_lic_path, nullptr, 0); }
 		ImGui::SameLine();
 		if (ImGui::Button("粘貼 zRIF…")) ImGui::OpenPopup("p5d_zrif");
@@ -3004,7 +3011,7 @@ static void p5d_ui(SDL_Window *win) {
 			ImGui::EndPopup();
 		}
 	} else {
-		if (ImGui::Button("選擇遊戲文件夾…")) pick_folder(win, &g_p5d_rom_path);
+		if (ImGui::Button("導入 mai 遊戲格式文件夾…")) pick_folder(win, &g_p5d_rom_path);
 		ImGui::SameLine(); ImGui::TextDisabled("%s", g_p5d_rom_path.empty() ? "（或直接點「開始構建」使用已導入的拷貝）" : g_p5d_rom_path.c_str());
 	}
 	ImGui::EndDisabled();
