@@ -524364,3 +524364,27 @@ ASSETS_EXCLUDED.txt only for the launcher/release packaging -- the game's own bu
 FILES: src/runtime/*, src/pipeline/vitarecomp.py, src/packs/PCSH10109/*, src/dev/make_p5d_release.py.
 ANTI-FORGETTING: keywords M1795 repo release line v0.2.2, full source sync, normalized comparison, assets excluded.
 LOOKUP: 18.5220 = M1795 -> 18.5219 [launcher source sync], 18.5218 [v0.2.2], 18.5217 [Steam].
+
+
+## M1826–M1835: PKG 导入、zRIF、启动器界面与发布（2026-11-28）
+
+本轮把「启动器直接导入 PSN PKG 并构建」做完，并实机验证（用玩家自己的 PKG + 自己 Vita 的 work.bin 完成
+解密 → 导入 → 分析 → 重编译 → 构建 → 运行，画面正常）。里程碑：
+
+| 里程碑 | 内容 |
+|---|---|
+| M1826 | PKG 导入：`vitarecomp add <pkg> --license <rif>` 接入启动器；pack 增加 PSN 原版 eboot 版本 `1.00-pkg`（hash c01db433…，无 MaiDump 的 152 字节 stub；与 1.00-mai 同代码、256 个钩子中 241 个指令字节相同，其余为数据段位移的 movw 常量） |
+| M1827 | PKG 流程：两个明确按钮「导入 PKG」「导入许可证」→「④ 开始构建」→ 构建成功启动游戏 |
+| M1828 | 发布 v0.2.4-p5d |
+| M1829 | 打包脚本自动替换桌面旧启动器（旧版保留 `.old`） |
+| M1830 | 许可证支持 zRIF（pkg2zip 的 base64 + 预置字典 zlib 文本格式），`licenses.py import-zrif`，启动器可粘贴（仅自己的授权） |
+| M1831 | 界面：来源按钮改为「mai 遊戲格式文件夾 / PKG 格式遊戲文件」；选中项正常显示、未选中低亮（不再红）；记住的 PKG / 文件夹导入不再显示成已导入 |
+| M1832 | 界面：「導入許可證」与「粘貼 zRIF」之间加「或」 |
+| M1833 | 选好 PKG 自动导入（许可证来源：文件 / zRIF / 已保存库）并显示「已導入」；Build 只编译 |
+| M1834 | 库中已有游戏时选 PKG 只校验版本：新增 `vitarecomp add --verify-only`（只读 PKG 头部/SFO，不需许可证、不解密）；「撤銷導入」强制重新解密 |
+| M1835 | 发布与文档：桌面自动部署、README/说明更新、本记录 |
+
+验证要点：
+- 用 PSN 的 `HP0177-PCSH10109_00-…pkg` + Vita 的 `sce_sys/package/work.bin` 实测：解密 6 个 SELF、导入 35 libraries/406 functions、analyze 8 单元、recompile 全通过、build 出 `game_host_min.exe`（48,523,954 B）、600 帧测试出真实画面。
+- `--verify-only` 实测：`... is game version 1.00 (...) -- verified, nothing decrypted`，不涉及许可证。
+- 打包版自解压验证：解包内启动器与源码构建哈希一致；`licenses.py import-zrif` 在打包 payload 内实测可用。
