@@ -2568,6 +2568,12 @@ static void p5d_start_build(void) {
 	build_steps(steps, "PCSH10109");   /* analyse, recompile, compile: the same "@@" steps the hub's card runs */
 	task_start("構建 女神異聞錄5：星夜熱舞", "build", "PCSH10109", steps);
 }
+/* 導入許可證：拷進啟動器的許可證庫（按內容 ID），之後這款遊戲的 PKG 導入就不再需要它 */
+static void p5d_import_licence(void) {
+	if (g_p5d_lic_path.empty()) return;
+	prefs_set("p5d_lic_path", g_p5d_lic_path);
+	task_start("導入許可證", "licences", "", {step("導入許可證", vitarecomp({"licenses", "import", g_p5d_lic_path}))});
+}
 static void p5d_start_import(void) {
 	/* M1783: decrypt + import ONLY (the button was later removed at the owner's request: picking the folder does it). */
 	std::vector<Step> steps;
@@ -2905,7 +2911,7 @@ static void p5d_ui(SDL_Window *win) {
 		lic_seen = g_p5d_lic_path;
 		g_p5d_rom_tried.clear();
 		/* a PKG without its licence is not imported yet: the player picks the licence first (a kept licence needs none) */
-		rom_pending = !rom_seen.empty() && (g_p5d_rom_kind == 0 || !lic_seen.empty());
+		rom_pending = !rom_seen.empty() && g_p5d_rom_kind == 0;   /* (a PKG waits for 導入許可證 and ④ 開始構建) */
 		if (!rom_seen.empty()) prefs_set("p5d_rom_path", rom_seen);
 		prefs_set("p5d_lic_path", g_p5d_lic_path);
 		prefs_set("p5d_rom_kind", std::to_string(g_p5d_rom_kind));
@@ -2967,10 +2973,15 @@ static void p5d_ui(SDL_Window *win) {
 	} else { ui::dot(ui::warn); ImGui::TextUnformatted(g_p5d_rom_kind == 1 ? "尚未導入遊戲：選擇你的 PKG 文件（另需許可證 .rif / work.bin）" : "尚未導入遊戲：選擇你的遊戲文件夾（ux0:app/…，含 licence 的拷貝）"); }
 	ImGui::BeginDisabled(busy);
 	if (g_p5d_rom_kind == 1) {
-		if (ImGui::Button("選擇 PKG 文件…")) { static const SDL_DialogFileFilter pkgf[] = {{"PS Vita package", "pkg"}}; pick_file(win, &g_p5d_rom_path, pkgf, 1); }
-		ImGui::SameLine(); ImGui::TextDisabled("%s", g_p5d_rom_path.empty() ? "（PKG 文件）" : g_p5d_rom_path.c_str());
-		if (ImGui::Button("選擇許可證文件…")) pick_file(win, &g_p5d_lic_path, nullptr, 0);
-		ImGui::SameLine(); ImGui::TextDisabled("%s", g_p5d_lic_path.empty() ? "（.rif / work.bin；已保存過的許可證可留空）" : g_p5d_lic_path.c_str());
+		/* PKG 流程：先「導入 PKG」與「導入許可證」各完成一次，再點「④ 開始構建」；構建成功後即可啟動遊戲 */
+		if (ImGui::Button("導入 PKG…")) { static const SDL_DialogFileFilter pkgf[] = {{"PS Vita package", "pkg"}}; pick_file(win, &g_p5d_rom_path, pkgf, 1); }
+		ImGui::SameLine();
+		if (!g_p5d_rom_path.empty()) { ui::dot(ui::ready); ImGui::TextDisabled("PKG 已導入"); } else ImGui::TextDisabled("尚未導入 PKG");
+		if (ImGui::Button("導入許可證…")) pick_file(win, &g_p5d_lic_path, nullptr, 0);
+		ImGui::SameLine();
+		if (!g_p5d_lic_path.empty()) { ui::dot(ui::ready); ImGui::TextDisabled("許可證已導入"); } else ImGui::TextDisabled("尚未導入許可證（PKG 解密需要，一次即可）");
+		static std::string lic_imported;
+		if (!g_p5d_lic_path.empty() && g_p5d_lic_path != lic_imported) { lic_imported = g_p5d_lic_path; p5d_import_licence(); }
 	} else {
 		if (ImGui::Button("選擇遊戲文件夾…")) pick_folder(win, &g_p5d_rom_path);
 		ImGui::SameLine(); ImGui::TextDisabled("%s", g_p5d_rom_path.empty() ? "（或直接點「開始構建」使用已導入的拷貝）" : g_p5d_rom_path.c_str());
@@ -3039,8 +3050,8 @@ static void p5d_ui(SDL_Window *win) {
 	ui::heading("④ 開始構建", em * 1.25f);
 	if (built) { ui::dot(ui::ready); ImGui::TextUnformatted("已構建：可隨時啟動遊戲"); }
 	else if (imported) { ui::dot(ui::accent); ImGui::TextUnformatted("已導入，等待構建（AOT 重編譯 + 鏈接，約 2–6 分鐘）"); }
-	else { ui::dot(ui::muted); ImGui::TextUnformatted("導入遊戲後點擊右側按鈕"); }
-	ImGui::BeginDisabled(busy || (!imported && g_p5d_rom_path.empty()));
+	else { ui::dot(ui::muted); ImGui::TextUnformatted(g_p5d_rom_kind == 1 ? "導入 PKG 與許可證後點擊右側按鈕（會自動解密、識別版本並編譯）" : "導入遊戲後點擊右側按鈕"); }
+	ImGui::BeginDisabled(busy || (!imported && (g_p5d_rom_path.empty() || (g_p5d_rom_kind == 1 && g_p5d_lic_path.empty()))));
 	if (ui::primary_button(built ? "重新構建" : "開始構建")) p5d_start_build();
 	ImGui::EndDisabled();
 	ImGui::SameLine(); ImGui::TextDisabled("（會自動解密、識別版本並編譯成全原生程序）");
